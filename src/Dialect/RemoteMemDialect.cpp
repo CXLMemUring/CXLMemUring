@@ -14,6 +14,9 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "Dialect/RemoteMem.h"
+#include "Dialect/RemoteMemDialect.h"
+#include "Dialect/RemoteMemRef.h"
+#include "Dialect/OffloadOp.h"
 #include "Dialect/FunctionUtils.h"
 #include <iostream>
 #include <fstream>
@@ -22,31 +25,29 @@
 using namespace mlir;
 using namespace mlir::cira;
 
-//bool RemoteMemRefType::isValidElementType(Type elementType) {
-//    if (!elementType) return false;
-//    if (!elementType.isa<mlir::MemRefType, mlir::LLVM::LLVMPointerType, mlir::UnrankedMemRefType>()) return false;
-//    return true;
-//}
-//LogicalResult RemoteMemRefType::verify(function_ref<InFlightDiagnostic()> emitError, Type elementType, unsigned canRemote) {
-//    if (!RemoteMemRefType::isValidElementType(elementType))
-//        return emitError() << "invalid pointer elementType: " << elementType;
-//    return success();
-//}
-::mlir::Attribute RemoteMemDialect::parseAttribute(mlir::DialectAsmParser&, mlir::Type) const{}
-void RemoteMemDialect::printAttribute(mlir::Attribute, mlir::DialectAsmPrinter&) const{}
+// 注册类型和操作
 void RemoteMemDialect::initialize() {
     registerTypes();
-    addOperations<
-#define GET_OP_LIST
-#include "Dialect/RemoteMemRef.cpp.inc"
-        >();
-}
-void RemoteMemDialect::registerTypes() {
-    addTypes<
-#define GET_TYPEDEF_LIST
-#include "Dialect/RemoteMem.cpp.inc"
-        >();
+    
+    // Tablegen会自动注册操作，不需要手动添加
+    // addOperations<OffloadOp>();
 }
 
-#define GET_TYPEDEF_CLASSES
-#include "Dialect/RemoteMemRef.cpp.inc"
+void RemoteMemDialect::registerTypes() {
+    addTypes<RemoteMemRefType>();
+}
+
+::mlir::Attribute RemoteMemDialect::parseAttribute(mlir::DialectAsmParser &parser, mlir::Type type) const {
+    return nullptr;
+}
+
+void RemoteMemDialect::printAttribute(mlir::Attribute attr, mlir::DialectAsmPrinter &printer) const {
+    // Empty implementation
+}
+
+// 添加到全局命名空间，便于其他文件引用
+namespace mlir {
+namespace cira {
+class OffloadOp;
+} // namespace cira
+} // namespace mlir

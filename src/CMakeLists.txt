@@ -11,7 +11,7 @@ set(LIBS
   MLIROptLib
   MLIRDialect
   MLIRIR
-  # MLIRRemoteMem
+  MLIRRemoteMem
 )
 
 add_llvm_executable(cira driver.cpp)

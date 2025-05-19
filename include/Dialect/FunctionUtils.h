@@ -63,8 +63,11 @@ LLVM::LLVMFuncOp lookupOrCreateRDMAFn(ModuleOp moduleOp);
 // void rring_sync(ptr<i64> s/r, i64 t)
 LLVM::LLVMFuncOp lookupOrCreateRRingSync(ModuleOp moduleOp);
 
+// Function for remote offloading
+LLVM::LLVMFuncOp lookupOrCreateCallOffloadService(ModuleOp moduleOp);
+
 /* instrumentation intrinsics
-1. void @llvm.instrprof.increment(ptr <name>, i64 <hash>,
+1. void @llvm.instrprof.increment(ptr <n>, i64 <hash>,
                                        i32 <num-counters>, i32 <index>)
 
 2. void @llvm.instrprof.increment.step(ptr <name>, i64 <hash>,
@@ -73,7 +76,6 @@ LLVM::LLVMFuncOp lookupOrCreateRRingSync(ModuleOp moduleOp);
 */
 LLVM::LLVMFuncOp lookupOrCreateInstrInc(ModuleOp moduleOp);
 LLVM::LLVMFuncOp lookupOrCreateInstrIncStep(ModuleOp moduleOp);
-LLVM::LLVMFuncOp lookupOrCreateCallOffloadService(ModuleOp moduleOp);
 
 Value cacheRequestCallWrapper(OpBuilder &builder, Location loc, LLVM::LLVMFuncOp reqFn, Value ptr);
 

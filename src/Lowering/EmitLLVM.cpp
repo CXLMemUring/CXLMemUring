@@ -38,7 +38,7 @@ namespace mlir {
  using namespace mlir::cira;
 
 namespace {
-class EmitLLVMPass : public impl::EmitLLVMBase<EmitLLVMPass> {
+class EmitLLVMPass : public ::mlir::impl::EmitLLVMBase<EmitLLVMPass> {
 public:
     EmitLLVMPass() = default;
     void runOnOperation() override {

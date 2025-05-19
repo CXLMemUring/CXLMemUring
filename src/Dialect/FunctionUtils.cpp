@@ -52,9 +52,9 @@ LLVM::LLVMPointerType mlir::cira::getVoidPtrType(MLIRContext *ctx) {
     return LLVM::LLVMPointerType::get(getIntBitType(ctx, 8));
 }
 
-llvm::StringRef getNextRemoteAccessName() {
-    char buffer[50];  // Adjust size as needed
-    std::snprintf(buffer, sizeof(buffer), kRemoteAccess, kRemoteAccessNum++);
+llvm::StringRef mlir::cira::getNextRemoteAccessName() {
+    static char buffer[50];  // Make buffer static to ensure the string persists
+    snprintf(buffer, sizeof(buffer), kRemoteAccess, kRemoteAccessNum++);
     return llvm::StringRef(buffer);
 }
 LLVM::LLVMFuncOp mlir::cira::lookupOrCreatRemoteAccess(ModuleOp moduleOp) {
@@ -97,4 +97,17 @@ Operation::result_range mlir::cira::createLLVMCall(OpBuilder &builder, Location 
                                                    ValueRange inputs) {
 
     return builder.create<LLVM::CallOp>(loc, fn, inputs)->getResults();
+}
+
+LLVM::LLVMFuncOp mlir::cira::lookupOrCreateCallOffloadService(ModuleOp moduleOp) {
+    auto ctx = moduleOp.getContext();
+    return cira::lookupOrCreateFn(
+        moduleOp, 
+        "call_offload_service",
+        {getIntBitType(ctx, 64), getIntBitType(ctx, 64), getIntBitType(ctx, 64)}, 
+        getVoidPtrType(ctx));
+}
+
+Type mlir::cira::getIntBitType(MLIRContext *ctx, unsigned bitwidth) {
+    return IntegerType::get(ctx, bitwidth);
 }

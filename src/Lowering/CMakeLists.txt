@@ -18,7 +18,7 @@ add_mlir_conversion_library(MLIREmitLLVM
         MLIRLLVMDialect
         MLIRSCFDialect
         MLIRFuncDialect
-#        MLIRRemoteMem
+        MLIRRemoteMem
 #        MLIRRemoteMemLowerCommonConversion
 #        MLIRRemoteMemLowerTrivial
 #        MLIRLowerSCFRemote

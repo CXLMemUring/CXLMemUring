@@ -24,3 +24,4 @@ perf.data
 perf.data.old
 obj
 libmcf.so
+build*

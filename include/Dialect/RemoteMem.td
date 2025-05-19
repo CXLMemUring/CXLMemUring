@@ -10,7 +10,7 @@ include "mlir/IR/BuiltinTypeInterfaces.td"
 include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 
 // basic block top to remote memory
-def RemoteMem_Dialect : Dialect {
+def RemoteMemDialect : Dialect {
   let name = "cira";
   let cppNamespace = "::mlir::cira";
   let description = [{The `cira` dialect provides a unified interface to the remote memory access. The dialect will be converted to raw pointer or remotable access eventually}];
@@ -25,7 +25,7 @@ def RemoteMem_Dialect : Dialect {
   let useDefaultTypePrinterParser = 1;
 }
 class RemoteMem_Op<string mnemonic, list<Trait> traits = []>:
-  Op<RemoteMem_Dialect, mnemonic, traits>;
+  Op<RemoteMemDialect, mnemonic, traits>;
 
 /* RemoteMemRef Type Definitions */
 def IsRemoteMemRefTypePred : CPred<"$_self.isa<::mlir::cira::RemoteMemRefType>()">;
@@ -46,7 +46,7 @@ def AnyRemoteMemRef : RemoteMemRefOf<[AnyType]>;
 def RemoteMemRef : RemoteMemRefOf<[AnyMemRef, LLVM_AnyPointer]>;
 
 class Detail_RemoteMemType<string name, string typeMnemonic, list<Trait> traits = []>
-  :TypeDef<RemoteMem_Dialect, name, traits> {
+  :TypeDef<RemoteMemDialect, name, traits> {
     let mnemonic = typeMnemonic;
 }
 
@@ -96,8 +96,8 @@ def RemoteMem_OffloadOp : RemoteMem_Op<"offload", [
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
                        OptionalAttr<StrAttr>:$sym_visibility,
-                       OptionalAttr<DictArrayAttr>:$arg_attrs,
-                       OptionalAttr<DictArrayAttr>:$res_attrs);
+                       OptionalAttr<ArrayAttr>:$arg_attrs,
+                       OptionalAttr<ArrayAttr>:$res_attrs);
   let regions = (region AnyRegion:$body);
 
   let builders = [OpBuilder<(ins
@@ -106,29 +106,13 @@ def RemoteMem_OffloadOp : RemoteMem_Op<"offload", [
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
   let extraClassDeclaration = [{
-    static FuncOp create(Location location, StringRef name, FunctionType type,
+    static mlir::func::FuncOp create(Location location, StringRef name, FunctionType type,
                          ArrayRef<NamedAttribute> attrs = {});
-    static FuncOp create(Location location, StringRef name, FunctionType type,
+    static mlir::func::FuncOp create(Location location, StringRef name, FunctionType type,
                          Operation::dialect_attr_range attrs);
-    static FuncOp create(Location location, StringRef name, FunctionType type,
+    static mlir::func::FuncOp create(Location location, StringRef name, FunctionType type,
                          ArrayRef<NamedAttribute> attrs,
                          ArrayRef<DictionaryAttr> argAttrs);
-
-    /// Create a deep copy of this function and all of its blocks, remapping any
-    /// operands that use values outside of the function using the map that is
-    /// provided (leaving them alone if no entry is present). If the mapper
-    /// contains entries for function arguments, these arguments are not
-    /// included in the new function. Replaces references to cloned sub-values
-    /// with the corresponding value that is copied, and adds those mappings to
-    /// the mapper.
-    FuncOp clone(IRMapping &mapper);
-    FuncOp clone();
-
-    /// Clone the internal blocks and attributes from this function into dest.
-    /// Any cloned blocks are appended to the back of dest. This function
-    /// asserts that the attributes of the current function and dest are
-    /// compatible.
-    void cloneInto(FuncOp dest, IRMapping &mapper);
 
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods

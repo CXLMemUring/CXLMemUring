@@ -19,9 +19,9 @@ class RemoteMemRefType;
 class RemoteMemTypeLowerer : public TypeConverter {
 public:
     using TypeConverter::convertType;
-    RemoteMemTypeLowerer(MLIRContext *ctx, const DataLayoutAnalysis *analysis = nullptr);
+    RemoteMemTypeLowerer(MLIRContext *ctx,  DataLayoutAnalysis const*analysis = nullptr);
     RemoteMemTypeLowerer(MLIRContext *ctx, const LowerToLLVMOptions &options,
-                         const DataLayoutAnalysis *analysis = nullptr);
+                         DataLayoutAnalysis const*analysis = nullptr);
 
     MLIRContext &getContext();
     RemoteMemDialect *getDialect() { return rmemDialect; }

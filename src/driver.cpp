@@ -21,6 +21,7 @@
 #include "Conversion/Passes.h"
 #include "Dialect/RemoteMem.h"
 #include "Lowering/Passes.h"
+#include "Lowering/RemoteMemToLLVM.h"
 //#include "Utils/Passes.h"
 
 using namespace mlir;

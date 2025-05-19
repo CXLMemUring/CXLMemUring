@@ -33,6 +33,9 @@
 
 #include "Conversion/CIRA.h"
 #include "Dialect/RemoteMemTypeLower.h"
+#include "Dialect/RemoteMemDialect.h"
+#include "Dialect/RemoteMemRef.h"
+#include "Dialect/OffloadOp.h"
 
 namespace mlir {
 class Value;
@@ -117,8 +120,8 @@ protected:
     ///                  : (!llvm.ptr<f32>, i64) -> !llvm.ptr<f32>
     /// `sizeBytes`  = llvm.ptrtoint %gep : !llvm.ptr<f32> to i64
     void getMemRefDescriptorSizes(Location loc, MemRefType memRefType, ValueRange dynamicSizes,
-                                  ConversionPatternRewriter &rewriter, SmallVectorImpl<Value> &sizes,
-                                  SmallVectorImpl<Value> &strides, Value &sizeBytes) const;
+                                 ConversionPatternRewriter &rewriter, SmallVectorImpl<Value> &sizes,
+                                 SmallVectorImpl<Value> &strides, Value &sizeBytes) const;
 
     /// Computes the size of type in bytes.
     Value getSizeInBytes(Location loc, Type type, ConversionPatternRewriter &rewriter) const;
@@ -128,8 +131,8 @@ protected:
 
     /// Creates and populates a canonical memref descriptor struct.
     MemRefDescriptor createMemRefDescriptor(Location loc, MemRefType memRefType, Value allocatedPtr, Value alignedPtr,
-                                            ArrayRef<Value> sizes, ArrayRef<Value> strides,
-                                            ConversionPatternRewriter &rewriter) const;
+                                         ArrayRef<Value> sizes, ArrayRef<Value> strides,
+                                         ConversionPatternRewriter &rewriter) const;
 
     // block_base = lbase + (index % num_blocks) * block_size
     //    Value getBlockAddr(ModuleOp mop, Value curIndex, rmem::LocalCache &cache, Location loc,
@@ -140,7 +143,7 @@ template <typename SourceOp> class RemoteMemOpLoweringPattern : public RemoteMem
 public:
     using OpAdaptor = typename SourceOp::Adaptor;
     explicit RemoteMemOpLoweringPattern(cira::RemoteMemTypeLowerer typeConverter, MLIRContext *ctx,
-                                        PatternBenefit bft = 1)
+                                     PatternBenefit bft = 1)
         : RemoteMemLoweringPattern(SourceOp::getOperationName(), ctx, typeConverter, bft) {}
     void rewrite(Operation *op, ArrayRef<Value> operands, ConversionPatternRewriter &rewriter) const final {
         rewrite(cast<SourceOp>(op), OpAdaptor(operands, op->getAttrDictionary()), rewriter);
@@ -149,7 +152,7 @@ public:
     LogicalResult match(Operation *op) const final { return match(cast<SourceOp>(op)); }
 
     LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                                  ConversionPatternRewriter &rewriter) const final {
+                               ConversionPatternRewriter &rewriter) const final {
         return matchAndRewrite(cast<SourceOp>(op), OpAdaptor(operands, op->getAttrDictionary()), rewriter);
     }
 
@@ -178,7 +181,5 @@ private:
 
 #define GET_OP_CLASSES
 #include "Dialect/RemoteMem.h.inc"
-#define GET_TYPEDEF_CLASSES
-#include "Dialect/RemoteMemDialect.h.inc"
 
 #endif // CIRA_REMOTEMEM_H

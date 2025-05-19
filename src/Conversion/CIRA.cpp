@@ -21,7 +21,7 @@ namespace mlir {
 // =================================================================================================================
 
 namespace cira {
-class CIRAPass : public impl::CIRABase<CIRAPass> {
+class CIRAPass : public ::mlir::impl::CIRABase<CIRAPass> {
 public:
     CIRAPass() = default;
     void runOnOperation() override {
