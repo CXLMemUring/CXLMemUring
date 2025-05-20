@@ -25,12 +25,12 @@ jobs:
     - name: Install MLIR dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libmlir-16-dev libclang-16-dev llvm-16-dev mlir-16-tools
+        sudo apt-get install -y libmlir-17-dev libclang-17-dev llvm-17-dev mlir-17-tools
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DMLIR_DIR=/usr/lib/llvm-16/lib/cmake/mlir/
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DMLIR_DIR=/usr/lib/llvm-17/lib/cmake/mlir/
 
     - name: Build
       # Build your program with the given configuration
