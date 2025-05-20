@@ -25,7 +25,7 @@ jobs:
     - name: Install MLIR dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libmlir-16-dev mlir-tools
+        sudo apt-get install -y libmlir-16-dev
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
