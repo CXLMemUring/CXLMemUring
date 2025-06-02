@@ -1,3 +1,4 @@
 add_subdirectory(Dialect)
 add_subdirectory(Conversion)
 add_subdirectory(Lowering)
+add_subdirectory(polygeist)

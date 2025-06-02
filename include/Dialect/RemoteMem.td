@@ -63,7 +63,7 @@ def RemoteMem_OffloadOp : RemoteMem_Op<"offload", [
     attribute like SymbolRefAttr). An external function declaration (used when
     referring to a function declared in some other module) has no body. While
     the MLIR textual form provides a nice inline syntax for function arguments,
-    they are internally represented as “block arguments” to the first block in
+    they are internally represented as "block arguments" to the first block in
     the region.
 
     Only dialect attribute names may be specified in the attribute dictionaries
@@ -113,6 +113,9 @@ def RemoteMem_OffloadOp : RemoteMem_Op<"offload", [
     static mlir::func::FuncOp create(Location location, StringRef name, FunctionType type,
                          ArrayRef<NamedAttribute> attrs,
                          ArrayRef<DictionaryAttr> argAttrs);
+
+    /// Returns true if this function is external, i.e. it has no body.
+    bool isExternal() { return getBody().empty(); }
 
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
