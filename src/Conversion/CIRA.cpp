@@ -38,7 +38,10 @@ public:
     }
 };
 
-void populateCIRAPatterns(MLIRContext *ctx, RewritePatternSet &patterns) { populateSCFCIRAPatterns(ctx, patterns); }
+void populateCIRAPatterns(MLIRContext *ctx, RewritePatternSet &patterns) { 
+    populateSCFCIRAPatterns(ctx, patterns);
+    populateSCFToCiraPatterns(ctx, patterns);
+}
 
 std::unique_ptr<Pass> createCIRAPass() { return std::make_unique<CIRAPass>(); }
 

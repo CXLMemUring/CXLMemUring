@@ -6,12 +6,14 @@ add_mlir_dialect_library(MLIRRemoteMem
         ReadFromProfile.cpp
         RemoteMemTypeLowerer.cpp
         OffloadOp.cpp
+        CiraOps.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include
 
         DEPENDS
         MLIRRemoteMemIncGen
+        MLIRCiraOpsIncGen
 
         LINK_LIBS PUBLIC
         MLIRIR

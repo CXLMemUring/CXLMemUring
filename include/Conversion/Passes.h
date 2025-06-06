@@ -3,6 +3,7 @@
 
 #include "mlir/Pass/Pass.h"
 #include "Conversion/CIRA.h"
+#include "Conversion/CiraToLLVM.h"
 #include "Dialect/RemoteMem.h"
 
 namespace mlir {

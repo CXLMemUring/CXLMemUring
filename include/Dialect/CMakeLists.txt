@@ -8,5 +8,13 @@ mlir_tablegen(${dialect}Types.cpp.inc -gen-typedef-defs -typedefs-dialect=${dial
 mlir_tablegen(${dialect}Dialect.h.inc -gen-dialect-decls -dialect=${dialect_namespace})
 mlir_tablegen(${dialect}Dialect.cpp.inc -gen-dialect-defs -dialect=${dialect_namespace})
 add_public_tablegen_target(MLIR${dialect}IncGen)
+
+# Add CiraOps TableGen rules
+set(LLVM_TARGET_DEFINITIONS CiraOps.td)
+mlir_tablegen(CiraOps.h.inc -gen-op-decls -dialect=${dialect_namespace})
+mlir_tablegen(CiraOps.cpp.inc -gen-op-defs -dialect=${dialect_namespace})
+add_public_tablegen_target(MLIRCiraOpsIncGen)
+
 add_dependencies(mlir-headers MLIR${dialect}IncGen)
+add_dependencies(mlir-headers MLIRCiraOpsIncGen)
 add_subdirectory(Transforms)

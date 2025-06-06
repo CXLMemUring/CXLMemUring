@@ -14,3 +14,14 @@ def CIRA : Pass<"convert-target-to-remote", "ModuleOp"> {
     "scf::SCFDialect"
   ];
 }
+
+def ConvertCiraToLLVM : Pass<"convert-cira-to-llvm", "ModuleOp"> {
+  let summary = "Convert Cira dialect operations to LLVM dialect";
+  let description = [{
+    This pass converts operations from the Cira dialect to LLVM dialect,
+    handling offload operations, loads, stores, and other graph processing
+    primitives.
+  }];
+  let constructor = "mlir::cira::createConvertCiraToLLVMPass()";
+  let dependentDialects = ["LLVM::LLVMDialect"];
+}

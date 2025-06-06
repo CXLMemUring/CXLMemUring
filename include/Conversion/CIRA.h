@@ -24,8 +24,10 @@ class ConversionPatternRewriter;
 namespace cira {
 class RemoteMemDialect;
 
-void populateSCFCIRAPatterns(MLIRContext *ctx, RewritePatternSet &patterns);
 void populateCIRAPatterns(MLIRContext *ctx, RewritePatternSet &patterns);
+void populateSCFCIRAPatterns(MLIRContext *ctx, RewritePatternSet &patterns);
+void populateSCFToCiraPatterns(MLIRContext *ctx, RewritePatternSet &patterns);
+
 std::unique_ptr<Pass> createCIRAPass();
 } // namespace cira
 } // namespace mlir
