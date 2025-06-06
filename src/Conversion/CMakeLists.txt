@@ -1,7 +1,8 @@
 add_mlir_conversion_library(CXLMemUring
   CIRA.cpp
   SCFCIRAPattern.cpp
-
+  CiraToLLVM.cpp
+  SCFToCira.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include
@@ -19,4 +20,5 @@ add_mlir_conversion_library(CXLMemUring
   MLIRLLVMDialect
   MLIRSCFDialect
   MLIRTransforms
+  MLIRRemoteMem
 )

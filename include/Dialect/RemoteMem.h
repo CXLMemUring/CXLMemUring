@@ -36,6 +36,7 @@
 #include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"
 #include "Dialect/OffloadOp.h"
+#include "Dialect/CiraOps.h"
 
 namespace mlir {
 class Value;

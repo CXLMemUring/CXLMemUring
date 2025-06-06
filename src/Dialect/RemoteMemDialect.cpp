@@ -18,6 +18,7 @@
 #include "Dialect/RemoteMemRef.h"
 #include "Dialect/OffloadOp.h"
 #include "Dialect/FunctionUtils.h"
+#include "Dialect/CiraOps.h"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -29,8 +30,11 @@ using namespace mlir::cira;
 void RemoteMemDialect::initialize() {
     registerTypes();
     
-    // Tablegen会自动注册操作，不需要手动添加
-    // addOperations<OffloadOp>();
+    // Register Cira operations
+    addOperations<
+#define GET_OP_LIST
+#include "Dialect/CiraOps.cpp.inc"
+    >();
 }
 
 void RemoteMemDialect::registerTypes() {
