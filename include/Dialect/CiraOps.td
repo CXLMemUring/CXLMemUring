@@ -31,7 +31,7 @@ def Cira_LoadEdgeOp : Cira_OffloadOpBase<"load_edge", [Pure]> {
   let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
-    `(` $edge_ptr `,` $index (`,` $prefetch_distance^)? `)` attr-dict `:` type($result)
+    `(` $edge_ptr `,` $index (`,` $prefetch_distance^)? `)` attr-dict `:` type($edge_ptr) `->` type($result)
   }];
 }
 
@@ -49,7 +49,7 @@ def Cira_LoadNodeOp : Cira_OffloadOpBase<"load_node", [Pure]> {
   let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
-    `(` $edge_element `,` $field_name (`,` $prefetch_distance^)? `)` attr-dict `:` type($result)
+    `(` $edge_element `,` $field_name (`,` $prefetch_distance^)? `)` attr-dict `:` type($edge_element) `->` type($result)
   }];
 }
 
@@ -65,7 +65,7 @@ def Cira_GetPaddrOp : RemoteMem_Op<"offload.get_paddr", [Pure]> {
   let results = (outs LLVM_AnyPointer:$paddr);
 
   let assemblyFormat = [{
-    `(` $field_name `,` $node_data `)` attr-dict `:` type($paddr)
+    `(` $field_name `,` $node_data `)` attr-dict `:` type($node_data) `->` type($paddr)
   }];
 }
 
@@ -80,7 +80,7 @@ def Cira_EvictEdgeOp : Cira_OffloadOpBase<"evict_edge", []> {
                        Index:$index);
 
   let assemblyFormat = [{
-    `(` $edge_ptr `,` $index `)` attr-dict
+    `(` $edge_ptr `,` $index `)` attr-dict `:` type($edge_ptr)
   }];
 }
 
@@ -98,7 +98,7 @@ def Cira_OffloadOp : RemoteMem_Op<"offload", [SingleBlock, NoTerminator]> {
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    $command `(` $operands `)` (`:` type($result)^)? $body attr-dict
+    $command `(` $operands `)` attr-dict `:` functional-type($operands, $result) $body
   }];
 }
 

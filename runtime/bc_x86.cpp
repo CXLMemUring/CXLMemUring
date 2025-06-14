@@ -68,7 +68,7 @@ public:
     bool execute() {
         if (!completed) {
             BTreeOpRequest req;
-            req.op_type = OP_INSERT;
+            req.op_type = OP_INSERT;    
             req.key = key;
             req.node_id = node_id;
 
