@@ -4,6 +4,8 @@
 #include "mlir/Pass/Pass.h"
 #include "Conversion/CIRA.h"
 #include "Conversion/CiraToLLVM.h"
+#include "Conversion/TOSAToCira.h"
+#include "Conversion/CIRToCira.h"
 #include "Dialect/RemoteMem.h"
 
 namespace mlir {
