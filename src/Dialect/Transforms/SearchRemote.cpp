@@ -10,7 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
@@ -116,7 +116,7 @@ public:
     builder.setInsertionPointToStart(entryBlock);
 
     // Create a mapping from old values to new function arguments
-    mlir::BlockAndValueMapping mapping;
+    mlir::IRMapping mapping;
     mapping.map(forOp.getInductionVar(), entryBlock->getArgument(0));
     for (size_t i = 0; i < capturedValues.size(); ++i) {
       mapping.map(capturedValues[i], entryBlock->getArgument(i + 1));

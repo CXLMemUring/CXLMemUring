@@ -8,20 +8,17 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
-#include "Dialect/RemoteMem.h"
+#include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"
 
+// Forward declarations
 namespace mlir {
 namespace cira {
-
-//===----------------------------------------------------------------------===//
-// Cira Operations
-//===----------------------------------------------------------------------===//
+class RemoteMemDialect;
+} // namespace cira
+} // namespace mlir
 
 #define GET_OP_CLASSES
 #include "Dialect/CiraOps.h.inc"
-
-} // namespace cira
-} // namespace mlir
 
 #endif // CIRA_OPS_H

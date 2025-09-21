@@ -36,4 +36,8 @@ add_definitions(${LLVM_DEFINITIONS})
 add_subdirectory(include)
 add_subdirectory(src)
 add_subdirectory(tools)
-add_subdirectory(lib/polygeist)
+# Polygeist disabled - using ClangIR integration instead
+# add_subdirectory(lib/polygeist)
+
+# Add runtime library
+add_subdirectory(runtime)

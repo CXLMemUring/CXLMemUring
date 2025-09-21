@@ -36,7 +36,6 @@
 #include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"
 #include "Dialect/OffloadOp.h"
-#include "Dialect/CiraOps.h"
 
 namespace mlir {
 class Value;
@@ -166,7 +165,7 @@ public:
 
     virtual LogicalResult matchAndRewrite(SourceOp op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const {
         if (failed(match(op)))
-            return mlir::failure();
+            return ::mlir::failure();
         rewrite(op, adaptor, rewriter);
         return success();
     }

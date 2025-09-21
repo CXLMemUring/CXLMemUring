@@ -3,6 +3,7 @@
 #include "Dialect/RemoteMem.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -69,7 +70,7 @@ struct GraphTraversalPattern : public OpRewritePattern<scf::ForOp> {
     // to analyze the access patterns and data types more carefully
     
     // Keep the original loop structure but add prefetch hints
-    rewriter.modifyOpInPlace(forOp, [&] {
+    rewriter.updateRootInPlace(forOp, [&] {
       // The actual transformation would be more complex
       // This is just a placeholder to show the pattern
     });
@@ -79,13 +80,15 @@ struct GraphTraversalPattern : public OpRewritePattern<scf::ForOp> {
 };
 
 /// Pattern to convert memory loads to cira.offload.load_edge
-struct MemRefLoadToCiraLoad : public OpRewritePattern<memref::LoadOp> {
-  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+struct MemRefLoadToCiraLoad : public RewritePattern {
+  MemRefLoadToCiraLoad(MLIRContext *context)
+      : RewritePattern(memref::LoadOp::getOperationName(), 1, context) {}
 
-  LogicalResult matchAndRewrite(memref::LoadOp loadOp,
+  LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
+    auto loadOp = cast<memref::LoadOp>(op);
     // Check if the memref type is remotable
-    auto memrefType = loadOp.getMemRef().getType().dyn_cast<MemRefType>();
+    auto memrefType = loadOp.getMemRef().getType().template dyn_cast<MemRefType>();
     if (!memrefType)
       return failure();
     

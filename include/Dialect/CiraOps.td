@@ -5,6 +5,7 @@ include "mlir/IR/OpBase.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 include "Dialect/RemoteMem.td"
 
 //===----------------------------------------------------------------------===//
@@ -12,13 +13,13 @@ include "Dialect/RemoteMem.td"
 //===----------------------------------------------------------------------===//
 
 // Base class for Cira operations that take an offload command
-class Cira_OffloadOpBase<string mnemonic, list<Trait> traits = []> :
+class OffloadOpBase<string mnemonic, list<Trait> traits = []> :
     RemoteMem_Op<"offload." # mnemonic, traits> {
   let summary = "Offload " # mnemonic # " operation";
 }
 
 // Load edge operation
-def Cira_LoadEdgeOp : Cira_OffloadOpBase<"load_edge", [Pure]> {
+def LoadEdgeOp : OffloadOpBase<"load_edge", [Pure]> {
   let summary = "Load edge data from remote memory";
   let description = [{
     Loads edge data from remote memory. Takes a remotable struct pointer,
@@ -36,7 +37,7 @@ def Cira_LoadEdgeOp : Cira_OffloadOpBase<"load_edge", [Pure]> {
 }
 
 // Load node operation  
-def Cira_LoadNodeOp : Cira_OffloadOpBase<"load_node", [Pure]> {
+def LoadNodeOp : OffloadOpBase<"load_node", [Pure]> {
   let summary = "Load node data from remote memory";
   let description = [{
     Loads node data from remote memory. Takes an edge element,
@@ -54,7 +55,7 @@ def Cira_LoadNodeOp : Cira_OffloadOpBase<"load_node", [Pure]> {
 }
 
 // Get physical address operation
-def Cira_GetPaddrOp : RemoteMem_Op<"offload.get_paddr", [Pure]> {
+def GetPaddrOp : RemoteMem_Op<"offload.get_paddr", [Pure]> {
   let summary = "Get physical address from offloaded data";
   let description = [{
     Obtains the physical address of previously offloaded node data.
@@ -62,7 +63,7 @@ def Cira_GetPaddrOp : RemoteMem_Op<"offload.get_paddr", [Pure]> {
 
   let arguments = (ins StrAttr:$field_name,
                        AnyType:$node_data);
-  let results = (outs LLVM_AnyPointer:$paddr);
+  let results = (outs Index:$paddr);
 
   let assemblyFormat = [{
     `(` $field_name `,` $node_data `)` attr-dict `:` type($node_data) `->` type($paddr)
@@ -70,7 +71,7 @@ def Cira_GetPaddrOp : RemoteMem_Op<"offload.get_paddr", [Pure]> {
 }
 
 // Evict edge operation
-def Cira_EvictEdgeOp : Cira_OffloadOpBase<"evict_edge", []> {
+def EvictEdgeOp : OffloadOpBase<"evict_edge", []> {
   let summary = "Evict edge data from cache";
   let description = [{
     Provides an eviction hint for processed edge cache line.
@@ -85,7 +86,7 @@ def Cira_EvictEdgeOp : Cira_OffloadOpBase<"evict_edge", []> {
 }
 
 // Generic offload operation wrapper
-def Cira_OffloadOp : RemoteMem_Op<"offload", [SingleBlock, NoTerminator]> {
+def OffloadOp : RemoteMem_Op<"offload", [SingleBlock, NoTerminator]> {
   let summary = "Generic offload operation";
   let description = [{
     Generic offload operation that can contain different offload commands.
@@ -103,7 +104,7 @@ def Cira_OffloadOp : RemoteMem_Op<"offload", [SingleBlock, NoTerminator]> {
 }
 
 // Call operation
-def Cira_CallOp : RemoteMem_Op<"call", [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+def CallOp : RemoteMem_Op<"call", [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Call a function with physical addresses";
   let description = [{
     Calls a function with the given arguments. This is typically used
@@ -115,11 +116,6 @@ def Cira_CallOp : RemoteMem_Op<"call", [CallOpInterface, DeclareOpInterfaceMetho
   let results = (outs Variadic<AnyType>);
 
   let builders = [
-    OpBuilder<(ins "func::FuncOp":$callee, CArg<"ValueRange", "{}">:$operands), [{
-      $_state.addOperands(operands);
-      $_state.addAttribute("callee", SymbolRefAttr::get(callee));
-      $_state.addTypes(callee.getFunctionType().getResults());
-    }]>,
     OpBuilder<(ins "SymbolRefAttr":$callee, "TypeRange":$results,
       CArg<"ValueRange", "{}">:$operands), [{
       $_state.addOperands(operands);
@@ -138,7 +134,6 @@ def Cira_CallOp : RemoteMem_Op<"call", [CallOpInterface, DeclareOpInterfaceMetho
   ];
 
   let extraClassDeclaration = [{
-    StringRef getCallee() { return getCalleeAttr().getValue(); }
     FunctionType getCalleeType();
 
     /// Get the argument operands to the called function.

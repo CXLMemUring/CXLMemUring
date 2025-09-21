@@ -67,7 +67,7 @@ struct LoadEdgeOpLowering : public ConversionPattern {
       // You would implement prefetch logic here
     }
     
-    rewriter.replaceOp(op, loadedValue);
+    rewriter.replaceOp(op, loadedValue.getResult());
     return success();
   }
 };

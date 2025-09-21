@@ -3,6 +3,7 @@ add_mlir_conversion_library(CXLMemUring
   SCFCIRAPattern.cpp
   CiraToLLVM.cpp
   SCFToCira.cpp
+  TOSAToCira.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include
@@ -15,10 +16,14 @@ add_mlir_conversion_library(CXLMemUring
 
   LINK_LIBS PUBLIC
   MLIRAnalysis
+  MLIRArithDialect
   MLIRDataLayoutInterfaces
+  MLIRFuncDialect
   MLIRMemRefDialect
   MLIRLLVMDialect
   MLIRSCFDialect
+  MLIRTensorDialect
+  MLIRTosaDialect
   MLIRTransforms
   MLIRRemoteMem
 )
