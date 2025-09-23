@@ -46,6 +46,9 @@ class RemoteMemRefType : public mlir::Type::TypeBase<RemoteMemRefType, mlir::Typ
 public:
   using Base::Base;
 
+  // Type name for MLIR type system
+  static constexpr StringLiteral name = "cira.remote_memref";
+
   static RemoteMemRefType get(Type elementType, unsigned cacheID = 0);
   
   static bool classof(Type type);

@@ -1,3 +1,4 @@
+#include "compat/LLVM.h"
 #include "Dialect/OffloadOp.h"
 #include "Dialect/RemoteMem.h"
 #include "mlir/IR/OpDefinition.h"

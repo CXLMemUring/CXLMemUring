@@ -15,7 +15,7 @@
 #include "Dialect/FunctionUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/TypeName.h"
-#include "mlir/Support/MathExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 

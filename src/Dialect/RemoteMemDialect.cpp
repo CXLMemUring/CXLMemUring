@@ -1,7 +1,9 @@
 //
 // Created by yangyw on 8/5/24.
 //
+#include "compat/LLVM.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"
 #include "Dialect/OffloadOp.h"

@@ -1,3 +1,4 @@
+#include "compat/LLVM.h"
 #include "Dialect/CiraOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"

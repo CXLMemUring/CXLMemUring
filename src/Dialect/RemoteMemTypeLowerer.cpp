@@ -1,3 +1,4 @@
+#include "compat/LLVM.h"
 #include "Dialect/RemoteMemTypeLower.h"
 #include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"

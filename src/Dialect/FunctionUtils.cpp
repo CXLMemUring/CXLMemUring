@@ -1,6 +1,7 @@
 //
 // Created by yangyw on 8/4/24.
 //
+#include "compat/LLVM.h"
 #include "Dialect/FunctionUtils.h"
 #include "Dialect/RemoteMem.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
