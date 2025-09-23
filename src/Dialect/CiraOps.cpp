@@ -1,4 +1,4 @@
-#include "compat/LLVM.h"
+
 #include "Dialect/CiraOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -12,13 +12,11 @@ using namespace mlir::cira;
 // CiraCallOp
 //===----------------------------------------------------------------------===//
 
-FunctionType CallOp::getCalleeType() {
-  return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
-}
+FunctionType CallOp::getCalleeType() { return FunctionType::get(getContext(), getOperandTypes(), getResultTypes()); }
 
 LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  // Basic symbol verification - check if the callee symbol exists
-  return success();
+    // Basic symbol verification - check if the callee symbol exists
+    return success();
 }
 
 //===----------------------------------------------------------------------===//

@@ -33,15 +33,15 @@ static void loadProfilingFromFile(std::string fileName, std::vector<ProfilingRes
 }
 
 Type typeAttrArrayToType(Attribute attr) {
-    auto typeAttr = attr.dyn_cast<ArrayAttr>()[0];
-    return typeAttr.dyn_cast<TypeAttr>().getValue();
+    auto typeAttr = llvm::dyn_cast<ArrayAttr>(attr)[0];
+    return llvm::dyn_cast<TypeAttr>(typeAttr).getValue();
 }
 
 size_t transformTypeSize(Type type) {
     unsigned factor = 512 * 1024;
     if (isa<LLVM::LLVMPointerType>(type)) {
-        auto ptrType = cast<LLVM::LLVMPointerType>(type);
-        return transformTypeSize(ptrType.getElementType());
+        // LLVMPointerType no longer has getElementType in opaque pointer mode
+        return factor; // Return default size for pointers
     } else if (isa<LLVM::LLVMStructType>(type)) {
         auto structType = cast<LLVM::LLVMStructType>(type);
         for (auto elementType : structType.getBody()) {
@@ -54,13 +54,9 @@ size_t transformTypeSize(Type type) {
 
 Type transformStruct(MLIRContext *context, Type type, int cacheId = 0) {
     if (isa<LLVM::LLVMPointerType>(type)) {
-        auto ptrType = cast<LLVM::LLVMPointerType>(type);
-        auto innerType = transformStruct(context, ptrType.getElementType(), cacheId);
-        auto newPtrType = LLVM::LLVMPointerType::get(innerType);
-        if (isa<LLVM::LLVMPointerType>(innerType) || isa<LLVM::LLVMStructType>(innerType))
-            return newPtrType;
-        else
-            return cira::RemoteMemRefType::get(newPtrType, cacheId);
+        // Opaque pointers don't have element types - wrap in RemoteMemRef
+        auto ptrType = LLVM::LLVMPointerType::get(context);
+        return cira::RemoteMemRefType::get(ptrType, cacheId);
     } else if (isa<LLVM::LLVMStructType>(type)) {
         auto structType = cast<LLVM::LLVMStructType>(type);
         std::vector<Type> newElementTypes;
@@ -74,7 +70,8 @@ Type transformStruct(MLIRContext *context, Type type, int cacheId = 0) {
 
 unsigned walkRemoteType(Type type) {
     if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type))
-        return walkRemoteType(ptrType.getElementType());
+        // Opaque pointers - return default depth
+        return 1;
     else if (auto structType = dyn_cast<LLVM::LLVMStructType>(type)) {
         for (auto elementType : structType.getBody())
             return walkRemoteType(elementType);
@@ -99,7 +96,7 @@ func::FuncOp AllocationAnnotationPass::propogateRemotableFunction(func::FuncOp f
     auto types =
         newFuncOp->hasAttr("operand_types")
             ? llvm::to_vector(llvm::map_range(newFuncOp->getAttrOfType<ArrayAttr>("operand_types").getValue(),
-                                              [](Attribute attr) { return attr.dyn_cast<TypeAttr>().getValue(); }))
+                                              [](Attribute attr) { return llvm::dyn_cast<TypeAttr>(attr).getValue(); }))
             : llvm::to_vector(newFuncOp.getArgumentTypes());
     types[index] = type;
 
@@ -141,7 +138,7 @@ void AllocationAnnotationPass::propogateRemotableOperator(Operation *op, Type re
         if (!isa<LLVM::GlobalOp>(parentOp))
             return;
         addressOfOp->setAttr("remote_target", builder.getI64IntegerAttr(1));
-        remoteType = LLVM::LLVMPointerType::get(remoteType);
+        remoteType = LLVM::LLVMPointerType::get(remoteType.getContext());
         addressOfOp->setAttr("rel_types", builder.getTypeArrayAttr(remoteType));
         for (auto use : addressOfOp->getUsers())
             propogateRemotableOperator(use, remoteType, addressOfOp);
@@ -149,7 +146,8 @@ void AllocationAnnotationPass::propogateRemotableOperator(Operation *op, Type re
         // llvm::errs() << "propogate load op\n" << loadOp << "\n";
         if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(remoteType))
             for (auto use : loadOp->getUsers())
-                propogateRemotableOperator(use, ptrType.getElementType(), loadOp);
+                // Opaque pointers - skip element type propagation
+                continue;
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
         // llvm::errs() << "propogate call op\n" << callOp << "\n";
         auto callee = callOp.getCallee();
@@ -185,7 +183,7 @@ void AllocationAnnotationPass::propogateRemotable() {
                                                transformStruct(op->getContext(), globalOp.getType(), remote_id++)));
         }
 
-        auto remoteType = globalOp->getAttrOfType<ArrayAttr>("rel_types")[0].dyn_cast<TypeAttr>().getValue();
+        auto remoteType = llvm::dyn_cast<TypeAttr>(globalOp->getAttrOfType<ArrayAttr>("rel_types")[0]).getValue();
         propogateRemotableOperator(globalOp, remoteType, op);
     });
 }
@@ -205,7 +203,7 @@ void AllocationAnnotationPass::duplicateFunctions() {
             return WalkResult::advance();
 
         for (auto use : uses.value())
-            if (Operation *callOp = dyn_cast<CallOpInterface>(use.getUser())) {
+            if (auto callOp = dyn_cast<CallOpInterface>(use.getUser())) {
                 if (callOp->hasAttr("remote_target"))
                     remoteCalls.push_back(callOp);
                 else

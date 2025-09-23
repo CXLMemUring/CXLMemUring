@@ -39,7 +39,7 @@ unsigned WorkloadComplexityAnalyzer::visitSCFForOp(scf::ForOp forOp) {
     int64_t ub = upperBoundCst.value();
     int64_t lb = lowerBoundCst.value();
     int64_t step = stepCst ? stepCst.value() : 1;
-    int64_t numIteration = ceilDiv(ub - lb, step);
+    int64_t numIteration = llvm::divideCeil(ub - lb, step);
 
     unsigned complexity = visitBlock(forOp.getBody()) * numIteration;
     complexity = complexity < WorkloadComplexityAnalyzer::uncertain ? complexity : WorkloadComplexityAnalyzer::uncertain;

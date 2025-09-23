@@ -70,7 +70,7 @@ struct GraphTraversalPattern : public OpRewritePattern<scf::ForOp> {
     // to analyze the access patterns and data types more carefully
     
     // Keep the original loop structure but add prefetch hints
-    rewriter.updateRootInPlace(forOp, [&] {
+    rewriter.modifyOpInPlace(forOp, [&] {
       // The actual transformation would be more complex
       // This is just a placeholder to show the pattern
     });
@@ -88,7 +88,7 @@ struct MemRefLoadToCiraLoad : public RewritePattern {
                                 PatternRewriter &rewriter) const override {
     auto loadOp = cast<memref::LoadOp>(op);
     // Check if the memref type is remotable
-    auto memrefType = loadOp.getMemRef().getType().template dyn_cast<MemRefType>();
+    auto memrefType = llvm::dyn_cast<MemRefType>(loadOp.getMemRef().getType());
     if (!memrefType)
       return failure();
     

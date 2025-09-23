@@ -31,7 +31,7 @@ struct LoadEdgeOpLowering : public ConversionPattern {
     Location loc = op->getLoc();
     
     // Get the type converter
-    auto *converter = static_cast<LLVMTypeConverter *>(getTypeConverter());
+    auto *converter = const_cast<LLVMTypeConverter *>(static_cast<const LLVMTypeConverter *>(getTypeConverter()));
     
     // Convert result type
     Type resultType = converter->convertType(loadOp.getType());
@@ -56,7 +56,7 @@ struct LoadEdgeOpLowering : public ConversionPattern {
     // GEP to get the element address
     auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
     auto gep = rewriter.create<LLVM::GEPOp>(
-        loc, ptrType, resultType, operands[0], ValueRange{offset});
+        loc, ptrType, resultType, operands[0], ValueRange(offset));
     
     // Load the value
     auto loadedValue = rewriter.create<LLVM::LoadOp>(loc, resultType, gep);
@@ -84,7 +84,7 @@ struct LoadNodeOpLowering : public ConversionPattern {
     auto loadOp = cast<LoadNodeOp>(op);
     Location loc = op->getLoc();
     
-    auto *converter = static_cast<LLVMTypeConverter *>(getTypeConverter());
+    auto *converter = const_cast<LLVMTypeConverter *>(static_cast<const LLVMTypeConverter *>(getTypeConverter()));
     Type resultType = converter->convertType(loadOp.getType());
     if (!resultType)
       return failure();
@@ -172,7 +172,7 @@ struct CallOpLowering : public ConversionPattern {
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto callOp = cast<CallOp>(op);
-    auto *converter = static_cast<LLVMTypeConverter *>(getTypeConverter());
+    auto *converter = const_cast<LLVMTypeConverter *>(static_cast<const LLVMTypeConverter *>(getTypeConverter()));
     
     // Convert result types
     SmallVector<Type> resultTypes;

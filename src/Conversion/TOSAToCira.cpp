@@ -41,8 +41,8 @@ struct TOSAMatMulToCiraPattern : public OpRewritePattern<tosa::MatMulOp> {
     auto result = matmulOp.getResult();
 
     // Check if this matmul should be offloaded based on size
-    auto lhsType = lhs.getType().cast<TensorType>();
-    auto rhsType = rhs.getType().cast<TensorType>();
+    auto lhsType = llvm::cast<TensorType>(lhs.getType());
+    auto rhsType = llvm::cast<TensorType>(rhs.getType());
 
     if (!lhsType.hasStaticShape() || !rhsType.hasStaticShape()) {
       return failure(); // Skip dynamic shapes for now
@@ -80,8 +80,8 @@ struct TOSAMatMulToCiraPattern : public OpRewritePattern<tosa::MatMulOp> {
     auto rhsMemRef = rewriter.create<memref::AllocOp>(
         loc, MemRefType::get(rhsType.getShape(), rhsType.getElementType()));
     auto resultMemRef = rewriter.create<memref::AllocOp>(
-        loc, MemRefType::get(result.getType().cast<TensorType>().getShape(),
-                           result.getType().cast<TensorType>().getElementType()));
+        loc, MemRefType::get(llvm::cast<TensorType>(result.getType()).getShape(),
+                           llvm::cast<TensorType>(result.getType()).getElementType()));
 
     rewriter.replaceOp(matmulOp, offloadOp.getResult());
     return success();
@@ -105,8 +105,8 @@ struct TOSAConv2DToCiraPattern : public OpRewritePattern<tosa::Conv2DOp> {
     auto bias = convOp.getBias();
     auto result = convOp.getResult();
 
-    auto inputType = input.getType().cast<TensorType>();
-    auto weightType = weight.getType().cast<TensorType>();
+    auto inputType = llvm::cast<TensorType>(input.getType());
+    auto weightType = llvm::cast<TensorType>(weight.getType());
 
     if (!inputType.hasStaticShape() || !weightType.hasStaticShape()) {
       return failure();
@@ -168,7 +168,7 @@ struct TOSAReduceToCiraPattern : public OpRewritePattern<tosa::ReduceSumOp> {
     Location loc = reduceOp.getLoc();
 
     auto input = reduceOp.getInput();
-    auto inputType = input.getType().cast<TensorType>();
+    auto inputType = llvm::cast<TensorType>(input.getType());
 
     if (!inputType.hasStaticShape()) {
       return failure();
@@ -244,8 +244,8 @@ struct TOSAToCiraPass : public PassWrapper<TOSAToCiraPass, OperationPass<ModuleO
 
     // Mark large TOSA operations as illegal to force conversion
     target.addDynamicallyLegalOp<tosa::MatMulOp>([](tosa::MatMulOp op) {
-      auto lhsType = op.getA().getType().cast<TensorType>();
-      auto rhsType = op.getB().getType().cast<TensorType>();
+      auto lhsType = llvm::cast<TensorType>(op.getA().getType());
+      auto rhsType = llvm::cast<TensorType>(op.getB().getType());
 
       if (!lhsType.hasStaticShape() || !rhsType.hasStaticShape()) {
         return true; // Keep dynamic shapes as legal
@@ -260,8 +260,8 @@ struct TOSAToCiraPass : public PassWrapper<TOSAToCiraPass, OperationPass<ModuleO
     });
 
     target.addDynamicallyLegalOp<tosa::Conv2DOp>([](tosa::Conv2DOp op) {
-      auto inputType = op.getInput().getType().cast<TensorType>();
-      auto weightType = op.getWeight().getType().cast<TensorType>();
+      auto inputType = llvm::cast<TensorType>(op.getInput().getType());
+      auto weightType = llvm::cast<TensorType>(op.getWeight().getType());
 
       if (!inputType.hasStaticShape() || !weightType.hasStaticShape()) {
         return true;
@@ -284,7 +284,7 @@ struct TOSAToCiraPass : public PassWrapper<TOSAToCiraPass, OperationPass<ModuleO
     });
 
     target.addDynamicallyLegalOp<tosa::ReduceSumOp>([](tosa::ReduceSumOp op) {
-      auto inputType = op.getInput().getType().cast<TensorType>();
+      auto inputType = llvm::cast<TensorType>(op.getInput().getType());
 
       if (!inputType.hasStaticShape()) {
         return true;
@@ -325,7 +325,7 @@ TOSAOffloadAnalysis TOSAOffloadAnalysis::analyze(func::FuncOp func) {
       analysis.memoryIntensiveOps.push_back(op);
       analysis.graphOps.push_back(op);
 
-      auto lhsType = matmulOp.getA().getType().cast<TensorType>();
+      auto lhsType = llvm::cast<TensorType>(matmulOp.getA().getType());
       if (lhsType.hasStaticShape() && lhsType.getNumElements() > 10000) {
         analysis.remoteAccessOps.push_back(op);
       }
@@ -334,7 +334,7 @@ TOSAOffloadAnalysis TOSAOffloadAnalysis::analyze(func::FuncOp func) {
       analysis.memoryIntensiveOps.push_back(op);
       analysis.graphOps.push_back(op);
 
-      auto inputType = convOp.getInput().getType().cast<TensorType>();
+      auto inputType = llvm::cast<TensorType>(convOp.getInput().getType());
       if (inputType.hasStaticShape() && inputType.getNumElements() > 50000) {
         analysis.remoteAccessOps.push_back(op);
       }
@@ -342,7 +342,7 @@ TOSAOffloadAnalysis TOSAOffloadAnalysis::analyze(func::FuncOp func) {
     else if (auto reduceOp = dyn_cast<tosa::ReduceSumOp>(op)) {
       analysis.memoryIntensiveOps.push_back(op);
 
-      auto inputType = reduceOp.getInput().getType().cast<TensorType>();
+      auto inputType = llvm::cast<TensorType>(reduceOp.getInput().getType());
       if (inputType.hasStaticShape() && inputType.getNumElements() > 100000) {
         analysis.remoteAccessOps.push_back(op);
       }
@@ -361,7 +361,7 @@ bool TOSAOffloadAnalysis::shouldOffload(Operation *op) const {
 //===----------------------------------------------------------------------===//
 
 TensorMemoryTier mlir::cira::selectMemoryTier(Value tensor, const TOSAOffloadAnalysis &analysis) {
-  auto tensorType = tensor.getType().cast<TensorType>();
+  auto tensorType = llvm::cast<TensorType>(tensor.getType());
 
   if (!tensorType.hasStaticShape()) {
     return TensorMemoryTier::LOCAL_DRAM; // Conservative choice for dynamic shapes

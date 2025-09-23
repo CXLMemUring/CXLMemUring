@@ -41,7 +41,7 @@ struct CIRForLoopToCiraPattern : public OpRewritePattern<scf::ForOp> {
 
     // Estimate the loop workload
     auto tripCount = estimateTripCount(forOp);
-    if (!tripCount || tripCount < 10000) {
+    if (!tripCount || *tripCount < 10000) {
       return failure(); // Only offload large loops
     }
 
@@ -96,16 +96,16 @@ private:
   }
 
   /// Estimate the trip count of a loop
-  Optional<int64_t> estimateTripCount(scf::ForOp forOp) const {
+  std::optional<int64_t> estimateTripCount(scf::ForOp forOp) const {
     // Simple heuristic: check if bounds are constants
     auto lowerBound = forOp.getLowerBound().getDefiningOp<arith::ConstantOp>();
     auto upperBound = forOp.getUpperBound().getDefiningOp<arith::ConstantOp>();
     auto step = forOp.getStep().getDefiningOp<arith::ConstantOp>();
 
     if (lowerBound && upperBound && step) {
-      auto lbValue = lowerBound.getValue().cast<IntegerAttr>().getInt();
-      auto ubValue = upperBound.getValue().cast<IntegerAttr>().getInt();
-      auto stepValue = step.getValue().cast<IntegerAttr>().getInt();
+      auto lbValue = llvm::cast<IntegerAttr>(lowerBound.getValue()).getInt();
+      auto ubValue = llvm::cast<IntegerAttr>(upperBound.getValue()).getInt();
+      auto stepValue = llvm::cast<IntegerAttr>(step.getValue()).getInt();
 
       if (stepValue > 0) {
         return (ubValue - lbValue) / stepValue;

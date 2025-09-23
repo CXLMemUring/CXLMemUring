@@ -1,5 +1,5 @@
 # Add compiler flags to work around MLIR/LLVM compatibility issues
-add_compile_options(-fpermissive -Wno-error)
+add_compile_options(-fpermissive -Wno-error -w)
 
 add_mlir_dialect_library(MLIRRemoteMem
         RemoteMemDialect.cpp

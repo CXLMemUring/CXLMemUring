@@ -47,10 +47,10 @@ class SCFWhileDisagg : public OpConversionPattern<scf::WhileOp> {
         auto newWhileOp = rewriter.create<scf::WhileOp>(op.getLoc(), resultTypes, adaptor.getOperands());
 
         rewriter.inlineRegionBefore(op.getBefore(), newWhileOp.getBefore(), newWhileOp.getBefore().end());
-        rewriter.applySignatureConversion(&newWhileOp.getBefore(), beforeArgs);
+        rewriter.applySignatureConversion(&newWhileOp.getBefore().front(), beforeArgs);
 
         rewriter.inlineRegionBefore(op.getAfter(), newWhileOp.getAfter(), newWhileOp.getAfter().end());
-        rewriter.applySignatureConversion(&newWhileOp.getAfter(), afterArgs);
+        rewriter.applySignatureConversion(&newWhileOp.getAfter().front(), afterArgs);
 
         rewriter.replaceOp(op, newWhileOp.getResults());
         return mlir::success();
@@ -76,7 +76,7 @@ class SCFForOpDisagg : public OpConversionPattern<scf::ForOp> {
         // delete it before moving original block into the new loop body
         // newForOp.getBody()->erase();
         rewriter.inlineRegionBefore(op.getBodyRegion(), newForOp.getBodyRegion(), newForOp.getBodyRegion().end());
-        rewriter.applySignatureConversion(&newForOp.getBodyRegion(), result);
+        rewriter.applySignatureConversion(&newForOp.getBodyRegion().front(), result);
         rewriter.replaceOp(op, newForOp.getResults());
         return mlir::success();
     }

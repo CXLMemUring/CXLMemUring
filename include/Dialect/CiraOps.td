@@ -104,7 +104,7 @@ def OffloadOp : RemoteMem_Op<"offload", [SingleBlock, NoTerminator]> {
 }
 
 // Call operation
-def CallOp : RemoteMem_Op<"call", [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+def CallOp : RemoteMem_Op<"call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Call a function with physical addresses";
   let description = [{
     Calls a function with the given arguments. This is typically used

@@ -114,7 +114,7 @@ void populateEmitLLVMPatterns(LLVMTypeConverter &llvmTypeConverter, RewritePatte
     arith::populateArithToLLVMConversionPatterns(llvmTypeConverter, patterns);
     cf::populateControlFlowToLLVMConversionPatterns(llvmTypeConverter, patterns);
 
-    populateReconcileUnrealizedCastsPatterns(patterns);
+    // populateReconcileUnrealizedCastsPatterns(patterns); // Not available in this MLIR version
 }
 
 std::unique_ptr<Pass> createEmitLLVMPass() { return std::make_unique<EmitLLVMPass>(); }
