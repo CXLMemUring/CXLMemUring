@@ -19,6 +19,15 @@ void populateCiraToLLVMConversionPatterns(LLVMTypeConverter &converter,
 /// Create a pass to convert Cira operations to the LLVM dialect.
 std::unique_ptr<Pass> createConvertCiraToLLVMPass();
 
+/// Create a pass to convert Cira operations to LLVM for x86 target.
+std::unique_ptr<Pass> createConvertCiraToLLVMX86Pass();
+
+/// Create a pass to convert Cira operations to LLVM for ARM target.
+std::unique_ptr<Pass> createConvertCiraToLLVMARMPass();
+
+/// Create a pass to convert Cira operations to LLVM for heterogeneous execution.
+std::unique_ptr<Pass> createConvertCiraToLLVMHeteroPass();
+
 } // namespace cira
 } // namespace mlir
 

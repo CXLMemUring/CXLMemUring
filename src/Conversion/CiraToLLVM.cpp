@@ -8,11 +8,49 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/TargetParser/Triple.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace mlir;
 using namespace mlir::cira;
 
+enum class TargetArchitecture {
+  X86,
+  ARM,
+  Heterogeneous
+};
+
 namespace {
+
+// Command-line options for target architecture
+static llvm::cl::opt<std::string> targetArch(
+    "target-arch",
+    llvm::cl::desc("Target architecture for code generation"),
+    llvm::cl::init("auto"));
+
+// Helper function to determine target architecture
+TargetArchitecture getTargetArchitecture(ModuleOp module) {
+  if (targetArch != "auto") {
+    if (targetArch == "x86")
+      return TargetArchitecture::X86;
+    else if (targetArch == "arm")
+      return TargetArchitecture::ARM;
+    else if (targetArch == "hetero")
+      return TargetArchitecture::Heterogeneous;
+  }
+
+  // Check module's target triple attribute
+  if (auto tripleAttr = module->getAttrOfType<StringAttr>("llvm.target_triple")) {
+    llvm::Triple triple(tripleAttr.getValue());
+    if (triple.isX86())
+      return TargetArchitecture::X86;
+    else if (triple.isARM() || triple.isAArch64())
+      return TargetArchitecture::ARM;
+  }
+
+  // Default to heterogeneous for CXLMemUring
+  return TargetArchitecture::Heterogeneous;
+}
 
 //===----------------------------------------------------------------------===//
 // Conversion patterns
@@ -20,9 +58,11 @@ namespace {
 
 /// Convert cira.offload.load_edge to LLVM operations
 struct LoadEdgeOpLowering : public ConversionPattern {
-  LoadEdgeOpLowering(LLVMTypeConverter &converter)
+  TargetArchitecture targetArch;
+
+  LoadEdgeOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
       : ConversionPattern(converter, LoadEdgeOp::getOperationName(), 1,
-                          &converter.getContext()) {}
+                          &converter.getContext()), targetArch(arch) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
@@ -61,10 +101,18 @@ struct LoadEdgeOpLowering : public ConversionPattern {
     // Load the value
     auto loadedValue = rewriter.create<LLVM::LoadOp>(loc, resultType, gep);
     
-    // Handle prefetch if provided
+    // Handle prefetch based on target architecture
     if (operands.size() > 2 && operands[2]) {
-      // Emit prefetch intrinsic call
-      // You would implement prefetch logic here
+      // Prefetch will be handled by target-specific lowering
+      // For now, emit a generic prefetch intrinsic
+      auto context = rewriter.getContext();
+      auto prefetchFunc = FlatSymbolRefAttr::get(context, "llvm.prefetch.p0");
+      auto i32Type = IntegerType::get(context, 32);
+      auto rw = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(0));
+      auto locality = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(3));
+      auto cacheType = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(1));
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, prefetchFunc,
+                                     ValueRange{gep, rw, locality, cacheType});
     }
     
     rewriter.replaceOp(op, loadedValue.getResult());
@@ -97,8 +145,6 @@ struct LoadNodeOpLowering : public ConversionPattern {
     // 1. Extract the appropriate field from the edge element
     // 2. Load the node data from that address
     // 3. Handle prefetching if specified
-    
-    auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
     
     // For now, just extract a field from the struct
     // You would implement proper struct field extraction here
@@ -139,24 +185,68 @@ struct GetPaddrOpLowering : public ConversionPattern {
   }
 };
 
+// Helper function to emit architecture-specific prefetch
+static void emitPrefetchForTarget(ConversionPatternRewriter &rewriter, Location loc,
+                          Value addr, TargetArchitecture arch) {
+  auto context = rewriter.getContext();
+
+  if (arch == TargetArchitecture::X86 || arch == TargetArchitecture::Heterogeneous) {
+    // x86 prefetch intrinsic: llvm.prefetch(ptr, rw, locality, cache_type)
+    auto prefetchFunc = FlatSymbolRefAttr::get(context, "llvm.prefetch.p0");
+    auto i32Type = IntegerType::get(context, 32);
+
+    // rw=0 (read), locality=3 (high), cache_type=1 (data)
+    auto rw = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(0));
+    auto locality = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(3));
+    auto cacheType = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(1));
+
+    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, prefetchFunc,
+                                   ValueRange{addr, rw, locality, cacheType});
+  }
+
+  if (arch == TargetArchitecture::ARM) {
+    // ARM/AArch64 prefetch intrinsic: llvm.aarch64.prefetch(ptr, rw, target, stream, keep)
+    auto prefetchFunc = FlatSymbolRefAttr::get(context, "llvm.aarch64.prefetch.p0");
+    auto i32Type = IntegerType::get(context, 32);
+
+    // rw=0 (read), target=0 (L1), stream=3 (all levels), keep=0 (temporal), stream=1
+    auto rw = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(0));
+    auto target = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(3));
+    auto stream = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(0));
+    auto keep = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(1));
+
+    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, prefetchFunc,
+                                   ValueRange{addr, rw, target, stream, keep});
+  }
+}
+
 /// Convert cira.offload.evict_edge to LLVM operations
 struct EvictEdgeOpLowering : public ConversionPattern {
-  EvictEdgeOpLowering(LLVMTypeConverter &converter)
+  TargetArchitecture targetArch;
+
+  EvictEdgeOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
       : ConversionPattern(converter, EvictEdgeOp::getOperationName(), 1,
-                          &converter.getContext()) {}
+                          &converter.getContext()), targetArch(arch) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
-    
-    // In a real implementation, this would emit cache eviction hints
-    // For now, we'll emit a call to a runtime function or use clflush intrinsic
-    
-    // Create a call to __builtin_ia32_clflush or similar
-    // This is platform-specific and would need proper implementation
-    
-    // For now, just erase the operation as it has no results
+    auto context = rewriter.getContext();
+
+    // Emit architecture-specific cache eviction
+    if (targetArch == TargetArchitecture::X86 || targetArch == TargetArchitecture::Heterogeneous) {
+      // x86: Use clflush instruction
+      auto clflushFunc = FlatSymbolRefAttr::get(context, "llvm.x86.sse2.clflush");
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, clflushFunc, operands[0]);
+    }
+
+    if (targetArch == TargetArchitecture::ARM) {
+      // ARM: Use DC CIVAC (Clean and Invalidate by VA to PoC)
+      auto dcFunc = FlatSymbolRefAttr::get(context, "llvm.aarch64.dc.civac");
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, dcFunc, operands[0]);
+    }
+
     rewriter.eraseOp(op);
     return success();
   }
@@ -189,9 +279,134 @@ struct CallOpLowering : public ConversionPattern {
 };
 
 //===----------------------------------------------------------------------===//
+// Helper function for populating conversion patterns
+//===----------------------------------------------------------------------===//
+
+static void populateCiraToLLVMConversionPatternsImpl(
+    LLVMTypeConverter &converter, RewritePatternSet &patterns,
+    TargetArchitecture arch) {
+  patterns.add<LoadEdgeOpLowering, EvictEdgeOpLowering>(converter, arch);
+  patterns.add<LoadNodeOpLowering, GetPaddrOpLowering, CallOpLowering>(converter);
+}
+
+//===----------------------------------------------------------------------===//
 // Pass definition
 //===----------------------------------------------------------------------===//
 
+// Specialized pass for x86 target
+struct ConvertCiraToLLVMX86Pass
+    : public PassWrapper<ConvertCiraToLLVMX86Pass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertCiraToLLVMX86Pass)
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
+  StringRef getArgument() const final { return "convert-cira-to-llvm-x86"; }
+  StringRef getDescription() const final {
+    return "Convert Cira dialect to LLVM dialect for x86 target";
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    // Set target triple for x86
+    module->setAttr("llvm.target_triple",
+                    StringAttr::get(&getContext(), "x86_64-unknown-linux-gnu"));
+
+    LLVMTypeConverter converter(&getContext());
+    RewritePatternSet patterns(&getContext());
+    LLVMConversionTarget target(getContext());
+
+    target.addIllegalDialect<RemoteMemDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect>();
+
+    populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::X86);
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns))))
+      signalPassFailure();
+  }
+};
+
+// Specialized pass for ARM target
+struct ConvertCiraToLLVMARMPass
+    : public PassWrapper<ConvertCiraToLLVMARMPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertCiraToLLVMARMPass)
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
+  StringRef getArgument() const final { return "convert-cira-to-llvm-arm"; }
+  StringRef getDescription() const final {
+    return "Convert Cira dialect to LLVM dialect for ARM target";
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    // Set target triple for ARM
+    module->setAttr("llvm.target_triple",
+                    StringAttr::get(&getContext(), "aarch64-unknown-linux-gnu"));
+
+    LLVMTypeConverter converter(&getContext());
+    RewritePatternSet patterns(&getContext());
+    LLVMConversionTarget target(getContext());
+
+    target.addIllegalDialect<RemoteMemDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect>();
+
+    populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::ARM);
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns))))
+      signalPassFailure();
+  }
+};
+
+// Heterogeneous pass that partitions code for both architectures
+struct ConvertCiraToLLVMHeteroPass
+    : public PassWrapper<ConvertCiraToLLVMHeteroPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertCiraToLLVMHeteroPass)
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
+  StringRef getArgument() const final { return "convert-cira-to-llvm-hetero"; }
+  StringRef getDescription() const final {
+    return "Convert Cira dialect to LLVM dialect for heterogeneous execution";
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    // Mark functions with target attributes
+    module.walk([&](func::FuncOp func) {
+      StringRef name = func.getName();
+      // Functions with "remote_access" go to ARM
+      if (name.contains("remote_access")) {
+        func->setAttr("target-cpu", StringAttr::get(&getContext(), "cortex-a53"));
+        func->setAttr("target-features", StringAttr::get(&getContext(), "+neon"));
+      } else {
+        // Computation functions go to x86
+        func->setAttr("target-cpu", StringAttr::get(&getContext(), "x86-64"));
+        func->setAttr("target-features", StringAttr::get(&getContext(), "+sse4.2,+avx2"));
+      }
+    });
+
+    LLVMTypeConverter converter(&getContext());
+    RewritePatternSet patterns(&getContext());
+    LLVMConversionTarget target(getContext());
+
+    target.addIllegalDialect<RemoteMemDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect>();
+
+    populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::Heterogeneous);
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns))))
+      signalPassFailure();
+  }
+};
+
+// Original pass with auto-detection
 struct ConvertCiraToLLVMPass
     : public PassWrapper<ConvertCiraToLLVMPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertCiraToLLVMPass)
@@ -202,25 +417,23 @@ struct ConvertCiraToLLVMPass
 
   StringRef getArgument() const final { return "convert-cira-to-llvm"; }
   StringRef getDescription() const final {
-    return "Convert Cira dialect to LLVM dialect";
+    return "Convert Cira dialect to LLVM dialect (auto-detect target)";
   }
 
   void runOnOperation() override {
+    auto module = getOperation();
+    auto arch = getTargetArchitecture(module);
+
     LLVMTypeConverter converter(&getContext());
     RewritePatternSet patterns(&getContext());
     LLVMConversionTarget target(getContext());
 
-    // Mark Cira operations as illegal
     target.addIllegalDialect<RemoteMemDialect>();
-    
-    // Allow LLVM operations
     target.addLegalDialect<LLVM::LLVMDialect>();
-    
-    // Populate conversion patterns
-    populateCiraToLLVMConversionPatterns(converter, patterns);
 
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+    populateCiraToLLVMConversionPatternsImpl(converter, patterns, arch);
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }
 };
@@ -229,10 +442,23 @@ struct ConvertCiraToLLVMPass
 
 void mlir::cira::populateCiraToLLVMConversionPatterns(
     LLVMTypeConverter &converter, RewritePatternSet &patterns) {
-  patterns.add<LoadEdgeOpLowering, LoadNodeOpLowering, GetPaddrOpLowering,
-               EvictEdgeOpLowering, CallOpLowering>(converter);
+  // Default to heterogeneous if not specified
+  populateCiraToLLVMConversionPatternsImpl(converter, patterns,
+                                      TargetArchitecture::Heterogeneous);
 }
 
 std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMPass() {
   return std::make_unique<ConvertCiraToLLVMPass>();
+}
+
+std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMX86Pass() {
+  return std::make_unique<ConvertCiraToLLVMX86Pass>();
+}
+
+std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMARMPass() {
+  return std::make_unique<ConvertCiraToLLVMARMPass>();
+}
+
+std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMHeteroPass() {
+  return std::make_unique<ConvertCiraToLLVMHeteroPass>();
 }

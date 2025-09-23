@@ -20,8 +20,39 @@ def ConvertCiraToLLVM : Pass<"convert-cira-to-llvm", "ModuleOp"> {
   let description = [{
     This pass converts operations from the Cira dialect to LLVM dialect,
     handling offload operations, loads, stores, and other graph processing
-    primitives.
+    primitives. Auto-detects target architecture from module attributes.
   }];
   let constructor = "mlir::cira::createConvertCiraToLLVMPass()";
+  let dependentDialects = ["LLVM::LLVMDialect"];
+}
+
+def ConvertCiraToLLVMX86 : Pass<"convert-cira-to-llvm-x86", "ModuleOp"> {
+  let summary = "Convert Cira dialect to LLVM for x86 target";
+  let description = [{
+    This pass converts Cira dialect operations to LLVM dialect specifically
+    for x86-64 architectures, optimizing for computational workloads.
+  }];
+  let constructor = "mlir::cira::createConvertCiraToLLVMX86Pass()";
+  let dependentDialects = ["LLVM::LLVMDialect"];
+}
+
+def ConvertCiraToLLVMARM : Pass<"convert-cira-to-llvm-arm", "ModuleOp"> {
+  let summary = "Convert Cira dialect to LLVM for ARM target";
+  let description = [{
+    This pass converts Cira dialect operations to LLVM dialect specifically
+    for ARM/AArch64 architectures, optimizing for memory management tasks.
+  }];
+  let constructor = "mlir::cira::createConvertCiraToLLVMARMPass()";
+  let dependentDialects = ["LLVM::LLVMDialect"];
+}
+
+def ConvertCiraToLLVMHetero : Pass<"convert-cira-to-llvm-hetero", "ModuleOp"> {
+  let summary = "Convert Cira dialect to LLVM for heterogeneous execution";
+  let description = [{
+    This pass converts Cira dialect operations to LLVM dialect for
+    heterogeneous execution across x86 (computation) and ARM (memory management)
+    processors, partitioning functions based on their workload characteristics.
+  }];
+  let constructor = "mlir::cira::createConvertCiraToLLVMHeteroPass()";
   let dependentDialects = ["LLVM::LLVMDialect"];
 }
