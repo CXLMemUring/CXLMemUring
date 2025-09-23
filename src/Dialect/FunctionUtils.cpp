@@ -12,7 +12,7 @@
 using namespace mlir;
 using namespace mlir::cira;
 
-static const char *kRemoteAccess = "remote_access_%s";
+static const char *kRemoteAccess = "remote_access_%d";
 static int kRemoteAccessNum = 0;
 static constexpr llvm::StringRef kInstrProfInc = "llvm.instrprof.increment";
 static constexpr llvm::StringRef kInstrProfIncStep = "llvm.instrprof.increment.step";

@@ -140,18 +140,41 @@ public:
                              mlir::OpBuilder &builder) {
     builder.setInsertionPoint(forOp);
 
+    // Create a new for loop with the same bounds and step, but also preserve iter_args
     auto newForOp = builder.create<mlir::scf::ForOp>(
         forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(),
-        forOp.getStep());
+        forOp.getStep(), forOp.getInitArgs());
 
-    builder.setInsertionPointToStart(newForOp.getBody());
+    // Copy the result types if the original loop had results
+    if (forOp.getNumResults() > 0) {
+      // Need to handle loops with results properly
+      // For now, just copy the body and skip remote call transformation
+      builder.setInsertionPointToStart(newForOp.getBody());
 
-    llvm::SmallVector<mlir::Value, 4> callOperands;
-    callOperands.push_back(newForOp.getInductionVar());
-    callOperands.append(capturedValues.begin(), capturedValues.end());
+      // Clone the body of the original loop
+      mlir::IRMapping mapping;
+      mapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
+      for (size_t i = 0; i < forOp.getRegionIterArgs().size(); ++i) {
+        mapping.map(forOp.getRegionIterArgs()[i], newForOp.getRegionIterArgs()[i]);
+      }
 
-    builder.create<mlir::func::CallOp>(forOp.getLoc(), remoteFunc,
-                                        callOperands);
+      for (auto &op : forOp.getBody()->getOperations()) {
+        builder.clone(op, mapping);
+      }
+
+      // Replace uses of the original loop's results with the new loop's results
+      forOp.replaceAllUsesWith(newForOp.getResults());
+    } else {
+      // Original path for loops without results
+      builder.setInsertionPointToStart(newForOp.getBody());
+
+      llvm::SmallVector<mlir::Value, 4> callOperands;
+      callOperands.push_back(newForOp.getInductionVar());
+      callOperands.append(capturedValues.begin(), capturedValues.end());
+
+      builder.create<mlir::func::CallOp>(forOp.getLoc(), remoteFunc,
+                                          callOperands);
+    }
 
     forOp.erase();
   }
