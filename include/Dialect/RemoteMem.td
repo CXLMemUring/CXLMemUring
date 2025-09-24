@@ -28,7 +28,7 @@ class RemoteMem_Op<string mnemonic, list<Trait> traits = []>:
   Op<RemoteMemDialect, mnemonic, traits>;
 
 /* RemoteMemRef Type Definitions */
-def IsRemoteMemRefTypePred : CPred<"$_self.isa<::mlir::cira::RemoteMemRefType>()">;
+def IsRemoteMemRefTypePred : CPred<"llvm::isa<::mlir::cira::RemoteMemRefType>($_self)">;
 
 class RemoteMemRefOf<list<Type> allowedTypes> :
   ContainerType<

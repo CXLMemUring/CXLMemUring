@@ -40,3 +40,16 @@ add_subdirectory(src)
 
 # Add runtime library
 add_subdirectory(runtime)
+
+# Testing
+include(CTest)
+if(BUILD_TESTING)
+  add_subdirectory(test)
+endif()
+
+# Optional: CIR dialect registration (from clangir checkout)
+message(STATUS "Enabling CIR dialect registration from ${CLANGIR_ROOT}")
+include_directories(${CLANGIR_ROOT}/llvm/include)
+include_directories(${CLANGIR_ROOT}/clang/include)
+# Common build layouts
+link_directories(${CLANGIR_ROOT}/llvm/build/lib)

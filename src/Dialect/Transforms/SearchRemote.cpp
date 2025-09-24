@@ -193,6 +193,11 @@ public:
     });
 
     for (auto forOp : forOpsToReplace) {
+      // For now, conservatively skip loops with results (reductions) to avoid
+      // invalid IR mutations. They can be handled in a follow-up.
+      if (forOp.getNumResults() > 0)
+        continue;
+
       llvm::SetVector<mlir::Value> capturedValues = analyzeValueUses(forOp);
       mlir::func::FuncOp remoteFunc =
           extractLoopBody(forOp, capturedValues, builder);

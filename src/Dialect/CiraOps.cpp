@@ -1,5 +1,7 @@
 
 #include "Dialect/CiraOps.h"
+#include "Dialect/RemoteMemRef.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"

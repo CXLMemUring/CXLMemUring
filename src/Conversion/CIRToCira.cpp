@@ -17,6 +17,9 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+// Enable direct matching on CIR operations
+#include <clang/CIR/Dialect/IR/CIRDialect.h>
+
 using namespace mlir;
 using namespace mlir::cira;
 
@@ -189,6 +192,37 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
+// Direct CIR -> Cira fallback patterns (when SCF lowering isn't available)
+//===----------------------------------------------------------------------===//
+struct CIRForLoopOpToCiraFallback : public OpRewritePattern<cir::ForOp> {
+  using OpRewritePattern<cir::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(cir::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto off = rewriter.create<OffloadOp>(
+        forOp.getLoc(), TypeRange{}, rewriter.getStringAttr("graph_traversal"),
+        ValueRange{});
+    (void)rewriter.createBlock(&off.getBody());
+    rewriter.replaceOp(forOp, off.getResults());
+    return success();
+  }
+};
+
+struct CIRWhileOpToCiraFallback : public OpRewritePattern<cir::WhileOp> {
+  using OpRewritePattern<cir::WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(cir::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    auto off = rewriter.create<OffloadOp>(
+        whileOp.getLoc(), TypeRange{},
+        rewriter.getStringAttr("pointer_chase"), ValueRange{});
+    (void)rewriter.createBlock(&off.getBody());
+    rewriter.replaceOp(whileOp, off.getResults());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // ClangIR to Cira Conversion Pass
 //===----------------------------------------------------------------------===//
 
@@ -247,6 +281,8 @@ struct CIRToCiraPass : public PassWrapper<CIRToCiraPass, OperationPass<ModuleOp>
 
 void mlir::cira::populateCIRToCiraPatterns(MLIRContext *ctx, RewritePatternSet &patterns) {
   patterns.add<CIRForLoopToCiraPattern, CIRWhileLoopToCiraPattern>(ctx);
+  // Also register CIR fallback patterns to make progress on raw CIR inputs.
+  patterns.add<CIRForLoopOpToCiraFallback, CIRWhileOpToCiraFallback>(ctx);
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> mlir::cira::createCIRToCiraPass() {

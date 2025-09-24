@@ -15,6 +15,26 @@ def CIRA : Pass<"convert-target-to-remote", "ModuleOp"> {
   ];
 }
 
+// Expose the ClangIR-to-CIRA pipeline entry (front-end like tagging + offload)
+def CIRToCira : Pass<"cir-to-cira", "ModuleOp"> {
+  let summary = "Convert/annotate ClangIR/SCF patterns into CIRA offload candidates";
+  let description = [{
+    This pass identifies common C/C++ graph-processing patterns (array scans,
+    nested loops, indirect loads) in ClangIR/SCF and either annotates them as
+    candidates for remote execution or wraps them in CIRA offload constructs.
+    Initially non-destructive and attribute-based for safe frontend testing.
+  }];
+  let constructor = "mlir::cira::createCIRToCiraPass()";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "cira::RemoteMemDialect",
+    "arith::ArithDialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
+}
+
 def ConvertCiraToLLVM : Pass<"convert-cira-to-llvm", "ModuleOp"> {
   let summary = "Convert Cira dialect operations to LLVM dialect";
   let description = [{

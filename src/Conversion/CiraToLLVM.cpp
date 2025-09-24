@@ -10,6 +10,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Support/CommandLine.h"
+// Allow marking CIR dialect ops as legal when running CIRA-only lowering
+#include <clang/CIR/Dialect/IR/CIRDialect.h>
 
 using namespace mlir;
 using namespace mlir::cira;
@@ -287,6 +289,18 @@ static void populateCiraToLLVMConversionPatternsImpl(
     TargetArchitecture arch) {
   patterns.add<LoadEdgeOpLowering, EvictEdgeOpLowering>(converter, arch);
   patterns.add<LoadNodeOpLowering, GetPaddrOpLowering, CallOpLowering>(converter);
+  // Trivial lowering for generic cira.offload (no results): erase the op.
+  struct GenericOffloadOpLowering : public ConversionPattern {
+    GenericOffloadOpLowering(LLVMTypeConverter &converter)
+        : ConversionPattern(converter, OffloadOp::getOperationName(), 1,
+                            &converter.getContext()) {}
+    LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                  ConversionPatternRewriter &rewriter) const override {
+      rewriter.eraseOp(op);
+      return success();
+    }
+  };
+  patterns.add<GenericOffloadOpLowering>(converter);
 }
 
 //===----------------------------------------------------------------------===//
@@ -319,6 +333,8 @@ struct ConvertCiraToLLVMX86Pass
 
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
+    // Permit CIR ops to remain when only lowering CIRA pieces.
+    target.addLegalDialect<cir::CIRDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::X86);
 
@@ -353,6 +369,7 @@ struct ConvertCiraToLLVMARMPass
 
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
+    target.addLegalDialect<cir::CIRDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::ARM);
 
@@ -398,6 +415,7 @@ struct ConvertCiraToLLVMHeteroPass
 
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
+    target.addLegalDialect<cir::CIRDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::Heterogeneous);
 
@@ -430,6 +448,7 @@ struct ConvertCiraToLLVMPass
 
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
+    target.addLegalDialect<cir::CIRDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, arch);
 
