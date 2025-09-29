@@ -145,11 +145,11 @@ public:
     explicit RemoteMemOpLoweringPattern(cira::RemoteMemTypeLowerer typeConverter, MLIRContext *ctx,
                                      PatternBenefit bft = 1)
         : RemoteMemLoweringPattern(SourceOp::getOperationName(), ctx, typeConverter, bft) {}
-    void rewrite(Operation *op, ArrayRef<Value> operands, ConversionPatternRewriter &rewriter) const final {
+    void rewrite(Operation *op, ArrayRef<Value> operands, ConversionPatternRewriter &rewriter) const {
         rewrite(cast<SourceOp>(op), OpAdaptor(operands, op->getAttrDictionary()), rewriter);
     }
 
-    LogicalResult match(Operation *op) const final { return match(cast<SourceOp>(op)); }
+    LogicalResult match(Operation *op) const { return match(cast<SourceOp>(op)); }
 
     LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                                ConversionPatternRewriter &rewriter) const final {

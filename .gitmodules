@@ -13,3 +13,6 @@
 [submodule "bench/MonetDB"]
 	path = bench/MonetDB
 	url = https://github.com/MonetDB/MonetDB
+[submodule "bench/llama.cpp"]
+	path = bench/llama.cpp
+	url = https://github.com/CXLMemUring/llama.cpp
