@@ -27,7 +27,7 @@ Copyright (c) 2003-2005 Andreas Loebel.
 #include "mcfutil.h"
 
 
-extern long write_circulations _PROTO_(( char *, network_t * ));
+extern long write_circulations _PROTO_((const char *, network_t * ));
 
 
 #endif

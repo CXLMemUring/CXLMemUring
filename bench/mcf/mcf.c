@@ -21,20 +21,119 @@ Copyright (c) 2003-2005 Andreas Loebel.
 
 
 #include "mcf.h"
+#include <unistd.h>
 
 #undef REPORT
 
 extern long min_impl_duration;
-network_t net;
+
+static void print_banner(void)
+{
+    char newline = '\n';
+    write( 1, &newline, 1 );
+}
 
 
 
 
+static void set_default_inputfile( network_t *net )
+{
+    size_t i = 0;
+
+    net->inputfile[i++] = '/';
+    net->inputfile[i++] = 'r';
+    net->inputfile[i++] = 'o';
+    net->inputfile[i++] = 'o';
+    net->inputfile[i++] = 't';
+    net->inputfile[i++] = '/';
+    net->inputfile[i++] = 'C';
+    net->inputfile[i++] = 'X';
+    net->inputfile[i++] = 'L';
+    net->inputfile[i++] = 'M';
+    net->inputfile[i++] = 'e';
+    net->inputfile[i++] = 'm';
+    net->inputfile[i++] = 'S';
+    net->inputfile[i++] = 'i';
+    net->inputfile[i++] = 'm';
+    net->inputfile[i++] = '/';
+    net->inputfile[i++] = 'w';
+    net->inputfile[i++] = 'o';
+    net->inputfile[i++] = 'r';
+    net->inputfile[i++] = 'k';
+    net->inputfile[i++] = 'l';
+    net->inputfile[i++] = 'o';
+    net->inputfile[i++] = 'a';
+    net->inputfile[i++] = 'd';
+    net->inputfile[i++] = 's';
+    net->inputfile[i++] = '/';
+    net->inputfile[i++] = 'm';
+    net->inputfile[i++] = 'c';
+    net->inputfile[i++] = 'f';
+    net->inputfile[i++] = '/';
+    net->inputfile[i++] = 'i';
+    net->inputfile[i++] = 'n';
+    net->inputfile[i++] = 'p';
+    net->inputfile[i++] = '.';
+    net->inputfile[i++] = 'i';
+    net->inputfile[i++] = 'n';
+    net->inputfile[i] = '\0';
+}
+
+
+
+
+static long require_new_arcs( network_t *net, long *residual_nb_it, long *new_arcs )
+{
+    long status = 0;
+
+    if( *residual_nb_it == 0 )
+    {
+        *new_arcs = 0;
+    }
+    else
+    {
+        if( net->m_impl )
+        {
+            *new_arcs = suspend_impl( net, (cost_t)-1, 0 );
+
+#ifdef REPORT
+            if( *new_arcs )
+                printf( "erased arcs                : %ld\n", *new_arcs );
+#endif
+        }
+
+        *new_arcs = price_out_impl( net );
+
+#ifdef REPORT
+        if( *new_arcs )
+            printf( "new implicit arcs          : %ld\n", *new_arcs );
+#endif
+
+        if( *new_arcs < 0 )
+        {
+#ifdef REPORT
+            printf( "not enough memory, exit(-1)\n" );
+#endif
+            status = -1;
+        }
+        else
+        {
+#ifndef REPORT
+            // printf( "\n" );
+#endif
+
+            --(*residual_nb_it);
+        }
+    }
+
+    return status;
+}
 
 #ifdef _PROTO_
-long global_opt( void )
+long global_opt( network_t *net )
 #else
-long global_opt( )
+long global_opt( net )
+network_t *net;
 #endif
 {
     long new_arcs;
@@ -42,21 +141,21 @@ long global_opt( )
     
 
     new_arcs = -1;
-    residual_nb_it = net.n_trips <= MAX_NB_TRIPS_FOR_SMALL_NET ?
+    residual_nb_it = net->n_trips <= MAX_NB_TRIPS_FOR_SMALL_NET ?
         MAX_NB_ITERATIONS_SMALL_NET : MAX_NB_ITERATIONS_LARGE_NET;
 
     while( new_arcs )
     {
 #ifdef REPORT
-        printf( "active arcs                : %ld\n", net.m );
+        printf( "active arcs                : %ld\n", net->m );
 #endif
 
-        primal_net_simplex( &net );
+        primal_net_simplex( net );
 
 
 #ifdef REPORT
-        printf( "simplex iterations         : %ld\n", net.iterations );
-        printf( "objective value            : %0.0f\n", flow_cost(&net) );
+        printf( "simplex iterations         : %ld\n", net->iterations );
+        printf( "objective value            : %0.0f\n", flow_cost(net) );
 #endif
 
 
@@ -64,46 +163,11 @@ long global_opt( )
         printf( "%ld residual iterations\n", residual_nb_it );
 #endif
 
-        if( !residual_nb_it )
-            break;
-
-
-        if( net.m_impl )
-        {
-          new_arcs = suspend_impl( &net, (cost_t)-1, 0 );
-
-#ifdef REPORT
-          if( new_arcs )
-            printf( "erased arcs                : %ld\n", new_arcs );
-#endif
-        }
-
-
-        new_arcs = price_out_impl( &net );
-
-#ifdef REPORT
-        if( new_arcs )
-            printf( "new implicit arcs          : %ld\n", new_arcs );
-#endif
-        
-        if( new_arcs < 0 )
-        {
-#ifdef REPORT
-            printf( "not enough memory, exit(-1)\n" );
-#endif
-
+        if( require_new_arcs( net, &residual_nb_it, &new_arcs ) )
             exit(-1);
-        }
-
-#ifndef REPORT
-        printf( "\n" );
-#endif
-
-
-        residual_nb_it--;
     }
 
-    printf( "checksum                   : %ld\n", net.checksum );
+    // printf( "checksum                   : %ld\n", net->checksum );
 
     return 0;
 }
@@ -114,50 +178,43 @@ long global_opt( )
 
 int main_ptr()
 {
+    int result = 0;
+    network_t net;
 
-    printf( "\nMCF SPEC CPU2006 version 1.10\n" );
-    printf( "Copyright (c) 1998-2000 Zuse Institut Berlin (ZIB)\n" );
-    printf( "Copyright (c) 2000-2002 Andreas Loebel & ZIB\n" );
-    printf( "Copyright (c) 2003-2005 Andreas Loebel\n" );
-    printf( "\n" );
+    print_banner();
 
     memset( (void *)(&net), 0, (size_t)sizeof(network_t) );
     net.bigM = (long)BIGM;
 
-    strcpy( net.inputfile, "/home/yangyw/isca25/CIRA/bench/mcf/data/train/input/inp.in" );
+    set_default_inputfile( &net );
     
     if( read_min( &net ) )
     {
-        printf( "read error, exit\n" );
-        getfree( &net );
-        return -1;
+        result = -1;
     }
-
 
 #ifdef REPORT
     printf( "nodes                      : %ld\n", net.n_trips );
 #endif
 
-
-    primal_start_artificial( &net );
-    
-    global_opt( );
-
+    if( !result )
+    {
+        primal_start_artificial( &net );
+        
+        global_opt( &net );
 
 #ifdef REPORT
-    printf( "done\n" );
+        printf( "done\n" );
 #endif
 
-    
-
-    if( write_circulations( "mcf.out", &net ) )
-    {
-        getfree( &net );
-        return -1;    
+        if( write_circulations( "mcf.out", &net ) )
+        {
+            getfree( &net );
+            return -1;    
+        }
     }
-
 
     getfree( &net );
 
-    return 0;
+    return result;
 }

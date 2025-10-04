@@ -29,6 +29,4 @@ Copyright (c) 2003-2005 Andreas Loebel.
 
 extern long price_out_impl _PROTO_(( network_t * ));
 extern long suspend_impl _PROTO_(( network_t *, cost_t, long ));
-
-
 #endif

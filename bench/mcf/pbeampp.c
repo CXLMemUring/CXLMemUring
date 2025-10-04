@@ -57,6 +57,9 @@ static long basket_size;
 static BASKET basket[B+K+1];
 static BASKET *perm[B+K+1];
 
+#define NR_GROUP_STATE (basket[0].cost)
+#define GROUP_POS_STATE (basket[0].abs_cost)
+
 
 void remote(arc_t *arc, long *basket_size, BASKET *perm[]);
 
@@ -107,10 +110,6 @@ void sort_basket( min, max )
 
 
 
-static long nr_group;
-static long group_pos;
-
-
 static long initialize = 1;
 
 #ifdef _PROTO_
@@ -132,10 +131,10 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
     {
         for( i=1; i < K+B+1; i++ )
             perm[i] = &(basket[i]);
-        nr_group = ( (m-1) / K ) + 1;
-        group_pos = 0;
         basket_size = 0;
         initialize = 0;
+        NR_GROUP_STATE = 0;
+        GROUP_POS_STATE = 0;
     }
     else
     {
@@ -155,13 +154,22 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
         basket_size = next;
         }
 
-    old_group_pos = group_pos;
-
-NEXT:
-    /* price next group */
-    arc = arcs + group_pos;
-    for( ; arc < stop_arcs; arc += nr_group )
+    if( NR_GROUP_STATE == 0 )
     {
+        NR_GROUP_STATE = ( (m-1) / K ) + 1;
+        if( NR_GROUP_STATE == 0 )
+            NR_GROUP_STATE = 1;
+        GROUP_POS_STATE = 0;
+    }
+
+    old_group_pos = (long)GROUP_POS_STATE;
+
+    do
+    {
+        /* price next group */
+        arc = arcs + (long)GROUP_POS_STATE;
+        for( ; arc < stop_arcs; arc += (long)NR_GROUP_STATE )
+        {
             // if( arc->ident > BASIC )
             // {
             //     /* red_cost = bea_compute_red_cost( arc ); */
@@ -174,21 +182,20 @@ NEXT:
             //         perm[basket_size]->abs_cost = ABS(red_cost);
             //     }
             // }
-        remote(arc, &basket_size, perm);
-        
-    }
+            remote(arc, &basket_size, perm);
+        }
 
-    if( ++group_pos == nr_group )
-        group_pos = 0;
+        GROUP_POS_STATE = (cost_t)((long)GROUP_POS_STATE + 1);
+        if( (long)GROUP_POS_STATE == (long)NR_GROUP_STATE )
+            GROUP_POS_STATE = 0;
 
-    if( basket_size < B && group_pos != old_group_pos )
-        goto NEXT;
+    } while( basket_size < B && (long)GROUP_POS_STATE != old_group_pos );
 	
     if( basket_size == 0 )
     {
         initialize = 1;
         *red_cost_of_bea = 0; 
-        return NULL;
+        exit(-1);
     }
     
     sort_basket( 1, basket_size );
@@ -196,11 +203,6 @@ NEXT:
     *red_cost_of_bea = perm[1]->cost;
     return( perm[1]->a );
 }
-
-
-
-
-
 
 
 

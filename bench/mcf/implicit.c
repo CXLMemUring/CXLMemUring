@@ -36,8 +36,6 @@ long resize_prob( net )
     size_t off;
             
     
-    assert( net->max_new_m >= 3 );
-
 
     net->max_m += net->max_new_m;
     net->max_residual_new_m += net->max_new_m;
@@ -57,7 +55,7 @@ long resize_prob( net )
     {
         printf( "network %s: not enough memory\n", net->inputfile );
         fflush( stdout );
-        return -1;
+        exit(-1);
     }
     
     off = (size_t)arc - (size_t)net->arcs;
@@ -233,7 +231,7 @@ long price_out_impl( net )
       {
         resized = 1;
         if( resize_prob( net ) )
-          return -1;
+          exit(-1);
         
         refresh_neighbour_lists( net );
       }
@@ -248,7 +246,7 @@ long price_out_impl( net )
       {
         resized = 1;
         if( resize_prob( net ) )
-          return -1;
+          exit(-1);
         
         refresh_neighbour_lists( net );
       }
@@ -424,6 +422,3 @@ long suspend_impl( net, threshold, all )
 
     return susp;
 }
-
-
-

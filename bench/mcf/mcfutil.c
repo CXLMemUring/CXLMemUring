@@ -105,16 +105,19 @@ long refresh_potential( net )
         
         node = tmp;
 
-        while( node->pred )
         {
-            tmp = node->sibling;
-            if( tmp )
+            int seek_sibling = 1;
+            while( node->pred && seek_sibling )
             {
-                node = tmp;
-                break;
+                tmp = node->sibling;
+                if( tmp )
+                {
+                    node = tmp;
+                    seek_sibling = 0;
+                }
+                else
+                    node = node->pred;
             }
-            else
-                node = node->pred;
         }
     }
     
@@ -265,12 +268,14 @@ long primal_feasible( net )
     arc_t *stop_dummy = net->stop_dummy;
     arc_t *arc;
     flow_t flow;
+    long result = 0;
     
 
     node = net->nodes;
     stop = (void *)net->stop_nodes;
+    node++;
 
-    for( node++; node < (node_t *)stop; node++ )
+    while( node < (node_t *)stop && !result )
     {
         arc = node->basic_arc;
         flow = node->flow;
@@ -278,9 +283,9 @@ long primal_feasible( net )
         {
             if( ABS(flow) > (flow_t)net->feas_tol )
             {
-                printf( "PRIMAL NETWORK SIMPLEX: " );
-                printf( "artificial arc with nonzero flow, node %d (%ld)\n",
-                        node->number, flow );
+                // printf( "PRIMAL NETWORK SIMPLEX: " );
+                // printf( "artificial arc with nonzero flow, node %d (%ld)\n",
+                        // node->number, flow );
             }
         }
         else
@@ -288,17 +293,22 @@ long primal_feasible( net )
             if( flow < (flow_t)(-net->feas_tol)
                || flow - (flow_t)1 > (flow_t)net->feas_tol )
             {
-                printf( "PRIMAL NETWORK SIMPLEX: " );
-                printf( "basis primal infeasible (%ld)\n", flow );
-                net->feasible = 0;
-                return 1;
+                // printf( "PRIMAL NETWORK SIMPLEX: " );
+                // printf( "basis primal infeasible (%ld)\n", flow );
+                result = 1;
             }
         }
+
+        if( !result )
+            node++;
     }
     
-    net->feasible = 1;
+    if( result )
+        net->feasible = 0;
+    else
+        net->feasible = 1;
     
-    return 0;
+    return result;
 }
 
 
@@ -320,10 +330,10 @@ long dual_feasible(  net )
     arc_t         *arc;
     arc_t         *stop     = net->stop_arcs;
     cost_t        red_cost;
+    int           infeasible = 0;
     
-    
-
-    for( arc = net->arcs; arc < stop; arc++ )
+    arc = net->arcs;
+    while( arc < stop && !infeasible )
     {
         red_cost = arc->cost - arc->tail->potential 
             + arc->head->potential;
@@ -337,7 +347,7 @@ long dual_feasible(  net )
                 printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
                        arc->ident, red_cost );
 #else
-                goto DUAL_INFEAS;
+                infeasible = 1;
 #endif
             
             break;
@@ -348,7 +358,7 @@ long dual_feasible(  net )
                 printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
                        arc->ident, red_cost );
 #else
-                goto DUAL_INFEAS;
+                infeasible = 1;
 #endif
 
             break;
@@ -358,7 +368,7 @@ long dual_feasible(  net )
                 printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
                        arc->ident, red_cost );
 #else
-                goto DUAL_INFEAS;
+                infeasible = 1;
 #endif
 
             break;
@@ -366,14 +376,19 @@ long dual_feasible(  net )
         default:
             break;
         }
+
+        if( !infeasible )
+            arc++;
     }
     
+    if( infeasible )
+    {
+        // write( 2, "DUAL NETWORK SIMPLEX: " ,22);
+        // write( 2, "basis dual infeasible\n",22); 
+        // return 1;
+    }
+
     return 0;
-    
-DUAL_INFEAS:
-    fprintf( stderr, "DUAL NETWORK SIMPLEX: " );
-    fprintf( stderr, "basis dual infeasible\n" );
-    return 1;
 }
 
 
@@ -400,6 +415,3 @@ long getfree( net )
 
     return 0;
 }
-
-
-

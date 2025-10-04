@@ -41,11 +41,11 @@ long read_min( net )
 
 
     if(( in = fopen( net->inputfile, "r")) == NULL )
-        return -1;
+        exit(-1);
 
     fgets( instring, 200, in );
     if( sscanf( instring, "%ld %ld", &t, &h ) != 2 )
-        return -1;
+        exit(-1);
     
 
     net->n_trips = t;
@@ -74,7 +74,6 @@ long read_min( net )
     net->max_residual_new_m = net->max_m - net->m;
 
 
-    assert( net->max_new_m >= 3 );
 
     
     net->nodes      = (node_t *) calloc( net->n + 1, sizeof(node_t) );
@@ -85,7 +84,7 @@ long read_min( net )
     {
       printf( "read_min(): not enough memory\n" );
       getfree( net );
-      return -1;
+      exit(-1);
     }
 
 
@@ -118,7 +117,7 @@ long read_min( net )
         fgets( instring, 200, in );
 
         if( sscanf( instring, "%ld %ld", &t, &h ) != 2 || t > h )
-            return -1;
+            exit(-1);
 
         node[i].number = -i;
         node[i].flow = (flow_t)-1;
@@ -159,7 +158,7 @@ long read_min( net )
 
     
     if( i != net->n_trips + 1 )
-        return -1;
+        exit(-1);
 
 
     for( i = 0; i < net->m_org; i++, arc++ )
@@ -167,7 +166,7 @@ long read_min( net )
         fgets( instring, 200, in );
         
         if( sscanf( instring, "%ld %ld %ld", &t, &h, &c ) != 3 )
-                return -1;
+                exit(-1);
 
         arc->tail = &(node[t+net->n_trips]);
         arc->head = &(node[h]);
