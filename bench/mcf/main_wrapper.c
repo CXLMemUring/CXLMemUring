@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 /* External main_ptr function from mcf.c */
-extern int main_ptr();
+extern int main_ptr(void);
 
 /* Stub for the missing remote function */
 typedef struct arc arc_t;

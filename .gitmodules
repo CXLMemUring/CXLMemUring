@@ -12,7 +12,7 @@
 	url = https://github.com/sbeamer/gapbs
 [submodule "bench/MonetDB"]
 	path = bench/MonetDB
-	url = https://github.com/MonetDB/MonetDB
+	url = https://github.com/CXLMemUring/MonetDB
 [submodule "bench/llama.cpp"]
 	path = bench/llama.cpp
 	url = https://github.com/CXLMemUring/llama.cpp

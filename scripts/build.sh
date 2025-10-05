@@ -342,18 +342,13 @@ for src in "${SOURCES[@]}"; do
       ;;
   esac
 
-  # Special handling for MCF benchmark files due to cir-opt crashes
-  if [[ "${BENCHMARK}" == "mcf" ]]; then
-    info "    Compiling ${rel} directly to LLVM IR (bypassing CIR/MLIR due to toolchain bugs)"
-    # Compile directly to LLVM IR without going through CIR - use -O0 to avoid optimizer crash
-    compile_flags_noopt=("${compile_flags[@]//-O3/-O0}")
-    "${CLANGIR_BIN}" -S -emit-llvm "${compile_flags_noopt[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${llvm_path}"
-  else
-    "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}"
-    "${CLANGIR_OPT_BIN}"  -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
-    "${CIRA_BIN}" "${mlir_path}" --cir-to-cira --rmem-search-remote -o "${cira_path}"
-    "${CIRA_BIN}" "${cira_path}" --convert-cira-to-llvm-hetero --convert-func-to-llvm --reconcile-unrealized-casts -o "${llvm_path}"
-  fi
+
+  "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}"
+  "${CLANGIR_OPT_BIN}" -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
+
+  "${CIRA_BIN}" "${mlir_path}" --cir-to-cira --rmem-search-remote -o "${cira_path}"
+  "${CIRA_BIN}" "${cira_path}" --convert-cira-to-llvm-hetero --convert-func-to-llvm --reconcile-unrealized-casts -o "${llvm_path}"
+
 
   LL_FILES+=("${llvm_path}")
 done
@@ -386,7 +381,42 @@ fi
 
 AARCH64_ARCH="aarch64-unknown-linux-gnu"
 mkdir -p "${BIN_ROOT}/${AARCH64_ARCH}"
-find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+
+# Check if we should build heterogeneous aarch64 binary
+if [[ "${BUILD_HETERO:-false}" == "true" ]] || [[ "${BENCHMARK}" == "mcf" ]]; then
+  info "Linking aarch64 binary with x86 memory offloading"
+  AARCH64_OBJ_DIR="${OBJ_DIR}/${AARCH64_ARCH}"
+  mapfile -t AARCH64_OBJS < <(find "${AARCH64_OBJ_DIR}" -type f -name '*.o' -print | sort)
+
+  if (( ${#AARCH64_OBJS[@]} > 0 )); then
+    # Link aarch64 binary with cross-compilation support
+    # Note: This requires aarch64 cross-compilation toolchain
+    if command -v aarch64-linux-gnu-g++ &> /dev/null; then
+      # Compile compiler runtime stubs if needed
+      STUB_FILE="${REPO_ROOT}/runtime/compiler_rt_stubs_aarch64.o"
+      if [[ ! -f "${STUB_FILE}" ]]; then
+        if [[ -f "${REPO_ROOT}/runtime/compiler_rt_stubs.c" ]]; then
+          aarch64-linux-gnu-gcc -c "${REPO_ROOT}/runtime/compiler_rt_stubs.c" -o "${STUB_FILE}" 2>/dev/null
+        fi
+      fi
+
+      # Link with stubs if available
+      LINK_OBJS=("${AARCH64_OBJS[@]}")
+      [[ -f "${STUB_FILE}" ]] && LINK_OBJS+=("${STUB_FILE}")
+
+      aarch64-linux-gnu-g++ "${LINK_OBJS[@]}" \
+        -o "${BIN_ROOT}/${AARCH64_ARCH}/${BIN_NAME}" 2>/dev/null || {
+          info "  Note: aarch64 linking failed, copying objects instead"
+          find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+        }
+    else
+      info "  Note: aarch64-linux-gnu-g++ not found, copying objects for manual linking"
+      find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+    fi
+  fi
+else
+  find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+fi
 
 info "Build completed"
 if [[ "${SKIP_LINK}" != "true" ]]; then
@@ -394,5 +424,11 @@ if [[ "${SKIP_LINK}" != "true" ]]; then
 else
   info "  x86_64 objects available under ${OBJ_DIR}/${X86_ARCH} (link step skipped)"
 fi
-info "  aarch64 objects: ${BIN_ROOT}/${AARCH64_ARCH}"
-info "Use clang++ --target=aarch64-unknown-linux-gnu to link the copied objects if a sysroot is available."
+
+# Check if aarch64 binary was created
+if [[ -f "${BIN_ROOT}/${AARCH64_ARCH}/${BIN_NAME}" ]]; then
+  info "  aarch64 binary: ${BIN_ROOT}/${AARCH64_ARCH}/${BIN_NAME}"
+else
+  info "  aarch64 objects: ${BIN_ROOT}/${AARCH64_ARCH}"
+  info "Use aarch64-linux-gnu-g++ to link the objects with -lcira_runtime"
+fi
