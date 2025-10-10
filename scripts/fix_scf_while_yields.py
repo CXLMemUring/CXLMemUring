@@ -10,56 +10,56 @@ import sys
 
 def fix_scf_while_yields(text):
     """Add scf.yield statements to scf.while do blocks that are missing them."""
-    lines = text.split('\n')
-    result = []
-    i = 0
+    lines = text.splitlines()
 
-    while i < len(lines):
-        line = lines[i]
-        result.append(line)
-
-        # Look for } do {
+    # Find all '} do {' patterns
+    do_block_info = []
+    for i, line in enumerate(lines):
         if '} do {' in line:
-            # Track brace depth to find the matching closing }
-            base_indent = len(line) - len(line.lstrip())
-            depth = 1
-            j = i + 1
+            # Find the closing brace of this do block
+            # The '} do {' itself has the opening brace for the do block
+            # We need to find the matching closing brace
+            depth = 1  # We start with the { from '} do {'
+            end_idx = -1
 
-            while j < len(lines) and depth > 0:
-                if '{' in lines[j]:
-                    depth += lines[j].count('{')
-                if '}' in lines[j]:
-                    depth -= lines[j].count('}')
-
+            for j in range(i + 1, len(lines)):
+                depth += lines[j].count('{') - lines[j].count('}')
                 if depth == 0:
-                    # Found the closing } of the do block
-                    # Check if previous line already has scf.yield
-                    prev_idx = len(result) - 1
-                    while prev_idx >= 0 and not result[prev_idx].strip():
-                        prev_idx -= 1
-
-                    if prev_idx >= 0 and 'scf.yield' not in result[prev_idx]:
-                        # Add scf.yield with proper indentation
-                        yield_indent = base_indent + 2
-                        result.append(' ' * yield_indent + 'scf.yield')
-
-                    result.append(lines[j])
-                    i = j
+                    end_idx = j
                     break
-                else:
-                    result.append(lines[j])
-                j += 1
 
-            if depth != 0:
-                # Didn't find closing brace, malformed input
-                # Just continue without modification
-                i += 1
-            else:
-                i += 1
-        else:
-            i += 1
+            if end_idx != -1:
+                do_block_info.append([i, end_idx])  # Use list so we can modify
 
-    return '\n'.join(result)
+    # Process from innermost to outermost (reverse order)
+    # This ensures when we insert lines, we can adjust indices properly
+    for idx in range(len(do_block_info) - 1, -1, -1):
+        start_idx, end_idx = do_block_info[idx]
+
+        # Check if the line before the closing brace has scf.yield
+        # Find last non-empty line before closing brace
+        last_content_idx = end_idx - 1
+        while last_content_idx > start_idx and not lines[last_content_idx].strip():
+            last_content_idx -= 1
+
+        if last_content_idx > start_idx:
+            last_line = lines[last_content_idx].strip()
+            if 'scf.yield' not in last_line:
+                # Need to add scf.yield
+                # Get indentation from the '} do {' line and add 2 spaces
+                base_indent = len(lines[start_idx]) - len(lines[start_idx].lstrip())
+                yield_indent = base_indent + 2
+                yield_line = ' ' * yield_indent + 'scf.yield'
+
+                # Insert before the closing brace
+                lines.insert(end_idx, yield_line)
+
+                # Adjust end_idx for all unprocessed blocks that end at or after the insertion point
+                for i in range(idx):
+                    if do_block_info[i][1] >= end_idx:
+                        do_block_info[i][1] += 1
+
+    return '\n'.join(lines)
 
 
 def main():
