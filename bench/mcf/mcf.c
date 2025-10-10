@@ -207,11 +207,7 @@ int main_ptr()
         printf( "done\n" );
 #endif
 
-        if( write_circulations( "mcf.out", &net ) )
-        {
-            getfree( &net );
-            return -1;    
-        }
+      write_circulations( "mcf.out", &net ) ;
     }
 
     getfree( &net );

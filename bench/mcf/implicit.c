@@ -53,8 +53,8 @@ long resize_prob( net )
     arc = (arc_t *) realloc( net->arcs, net->max_m * sizeof(arc_t) );
     if( !arc )
     {
-        printf( "network %s: not enough memory\n", net->inputfile );
-        fflush( stdout );
+        // printf( "network %s: not enough memory\n", net->inputfile );
+        // fflush( stdout );
         exit(-1);
     }
     
@@ -268,8 +268,8 @@ long price_out_impl( net )
             first_of_sparse_list = arcout + 1;
         }
         
-        if( arcout->ident == FIXED )
-            continue;
+        // if( arcout->ident == FIXED )
+        //     continue;
         
         head = arcout->head;
         latest = head->time - arcout->org_cost 
@@ -282,11 +282,11 @@ long price_out_impl( net )
         {
             tail = arcin->tail;
 
-            if( tail->time + arcin->org_cost > latest )
-            {
-                arcin = tail->arc_tmp;
-                continue;
-            }
+            // if( tail->time + arcin->org_cost > latest )
+            // {
+            //     arcin = tail->arc_tmp;
+            //     continue;
+            // }
             
             red_cost = arc_cost - tail->potential + head->potential;
             

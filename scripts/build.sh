@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLANGIR_BIN="${CLANGIR_BIN:-$(command -v clang++ || true)}"
 CLANGIR_OPT_BIN="${CLANGIR_OPT_BIN:-$(command -v cir-opt || true)}"
 CIRA_BIN="${CIRA_BIN:-${REPO_ROOT}/build/bin/cira}"
+MLIR_TRANSLATE_BIN="${MLIR_TRANSLATE_BIN:-$(command -v mlir-translate || true)}"
 LLC_BIN="${LLC_BIN:-$(command -v llc || true)}"
 LINKER_BIN="${LINKER_BIN:-$(command -v clang++ || true)}"
 RUNTIME_LIB_DIR="${RUNTIME_LIB_DIR:-${REPO_ROOT}/build/lib}"
@@ -259,6 +260,7 @@ done
 [[ -n "${CLANGIR_BIN}" && -x "${CLANGIR_BIN}" ]] || die "clang++ with -fclangir support not found (set CLANGIR_BIN)"
 [[ -n "${CLANGIR_OPT_BIN}" && -x "${CLANGIR_OPT_BIN}" ]] || die "cir-opt not found (set CLANGIR_OPT_BIN)"
 [[ -x "${CIRA_BIN}" ]] || die "cira binary not found at ${CIRA_BIN}"
+[[ -n "${MLIR_TRANSLATE_BIN}" && -x "${MLIR_TRANSLATE_BIN}" ]] || die "mlir-translate not found (set MLIR_TRANSLATE_BIN)"
 [[ -n "${LLC_BIN}" && -x "${LLC_BIN}" ]] || die "llc not found (set LLC_BIN)"
 [[ -n "${LINKER_BIN}" && -x "${LINKER_BIN}" ]] || die "clang++ linker not found (set LINKER_BIN)"
 [[ -d "${RUNTIME_LIB_DIR}" ]] || die "Cira runtime library directory missing (${RUNTIME_LIB_DIR})"
@@ -326,6 +328,7 @@ for src in "${SOURCES[@]}"; do
   cir_path="${CIR_DIR}/${stem}.cir"
   mlir_path="${MLIR_DIR}/${stem}.mlir"
   cira_path="${CIRA_DIR}/${stem}.cira.mlir"
+  llvm_mlir_path="${LLVM_DIR}/${stem}.llvm.mlir"
   llvm_path="${LLVM_DIR}/${stem}.ll"
 
   mkdir -p "$(dirname "${cir_path}")" "$(dirname "${mlir_path}")" "$(dirname "${cira_path}")" "$(dirname "${llvm_path}")"
@@ -344,10 +347,24 @@ for src in "${SOURCES[@]}"; do
 
 
   "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}"
-  "${CLANGIR_OPT_BIN}" -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
+  "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
 
-  "${CIRA_BIN}" "${mlir_path}" --cir-to-cira --rmem-search-remote -o "${cira_path}"
-  "${CIRA_BIN}" "${cira_path}" --convert-cira-to-llvm-hetero --convert-func-to-llvm --reconcile-unrealized-casts -o "${llvm_path}"
+  "${CIRA_BIN}" -allow-unregistered-dialect "${mlir_path}" \
+    --cir-to-cira --rmem-search-remote -o "${cira_path}.unfixed"
+
+  # Fix scf.while blocks by adding missing scf.yield terminators
+  python3 "${REPO_ROOT}/scripts/fix_scf_while_yields.py" "${cira_path}.unfixed" "${cira_path}"
+  rm -f "${cira_path}.unfixed"
+
+  "${CIRA_BIN}" -allow-unregistered-dialect \
+    --pass-pipeline='builtin.module(convert-cira-to-llvm-hetero,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
+    "${cira_path}" -o "${llvm_mlir_path}.dirty"
+
+  python3 "${REPO_ROOT}/scripts/cleanup_unrealized_casts.py" "${llvm_mlir_path}.dirty" > "${llvm_mlir_path}.tmp"
+  python3 "${REPO_ROOT}/scripts/remove_leftover_scf.py" "${llvm_mlir_path}.tmp" "${llvm_mlir_path}"
+  rm -f "${llvm_mlir_path}.dirty" "${llvm_mlir_path}.tmp"
+
+  "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir "${llvm_mlir_path}" -o "${llvm_path}"
 
 
   LL_FILES+=("${llvm_path}")

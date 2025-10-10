@@ -3,8 +3,12 @@
 #include "Dialect/RemoteMem.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -335,6 +339,11 @@ struct ConvertCiraToLLVMX86Pass
     target.addLegalDialect<LLVM::LLVMDialect>();
     // Permit CIR ops to remain when only lowering CIRA pieces.
     target.addLegalDialect<cir::CIRDialect>();
+    target.addLegalDialect<scf::SCFDialect>();
+    target.addLegalDialect<cf::ControlFlowDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<memref::MemRefDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::X86);
 
@@ -370,6 +379,11 @@ struct ConvertCiraToLLVMARMPass
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
     target.addLegalDialect<cir::CIRDialect>();
+    target.addLegalDialect<scf::SCFDialect>();
+    target.addLegalDialect<cf::ControlFlowDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<memref::MemRefDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::ARM);
 
@@ -416,6 +430,11 @@ struct ConvertCiraToLLVMHeteroPass
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
     target.addLegalDialect<cir::CIRDialect>();
+    target.addLegalDialect<scf::SCFDialect>();
+    target.addLegalDialect<cf::ControlFlowDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<memref::MemRefDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::Heterogeneous);
 
@@ -449,6 +468,11 @@ struct ConvertCiraToLLVMPass
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();
     target.addLegalDialect<cir::CIRDialect>();
+    target.addLegalDialect<scf::SCFDialect>();
+    target.addLegalDialect<cf::ControlFlowDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<memref::MemRefDialect>();
 
     populateCiraToLLVMConversionPatternsImpl(converter, patterns, arch);
 

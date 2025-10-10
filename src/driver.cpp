@@ -19,6 +19,18 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "Conversion/Passes.h"
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/IndexToLLVM/IndexToLLVM.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "Dialect/RemoteMem.h"
 #include "Lowering/Passes.h"
 #include "Lowering/RemoteMemToLLVM.h"
@@ -39,6 +51,9 @@ struct PtrElementModel : public mlir::LLVM::PointerElementTypeInterface::Externa
 int main(int argc, char **argv) {
     mlir::DialectRegistry registry;
     registerAllDialects(registry);
+    // Explicitly register CF and SCF dialects to ensure they're available
+    registry.insert<mlir::cf::ControlFlowDialect>();
+    registry.insert<mlir::scf::SCFDialect>();
     registry.insert<mlir::cira::RemoteMemDialect>();
 
     registry.insert<cir::CIRDialect>();
@@ -78,6 +93,7 @@ int main(int argc, char **argv) {
 
     // register normal passes
     mlir::registerAllPasses();
+    mlir::registerConversionPasses();
     mlir::registerCSEPass();
     mlir::registerInlinerPass();
     mlir::registerCanonicalizerPass();
@@ -102,6 +118,15 @@ int main(int argc, char **argv) {
     registry.addExtension(+[](MLIRContext *ctx, memref::MemRefDialect *dialect) {
         MemRefType::attachInterface<PtrElementModel<MemRefType>>(*ctx);
     });
+    mlir::registerConvertMemRefToLLVMInterface(registry);
+    mlir::arith::registerConvertArithToLLVMInterface(registry);
+    mlir::registerConvertFuncToLLVMInterface(registry);
+    mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
+    mlir::registerConvertMathToLLVMInterface(registry);
+    mlir::index::registerConvertIndexToLLVMInterface(registry);
+    mlir::vector::registerConvertVectorToLLVMInterface(registry);
+    // Note: SCF to LLVM conversion is now done via SCF -> CF -> LLVM
+    mlir::ub::registerConvertUBToLLVMInterface(registry);
 
     registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
         LLVM::LLVMStructType::attachInterface<PtrElementModel<LLVM::LLVMStructType>>(*ctx);
