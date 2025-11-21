@@ -22,6 +22,17 @@ Copyright (c) 2003-2005 Andreas Loebel.
 
 #include "readmin.h"
 
+/* Branchless max to avoid generating conditional branches in hot paths. */
+static inline long branchless_max_long(long a, long b) {
+    unsigned long ua = (unsigned long)a;
+    unsigned long ub = (unsigned long)b;
+    /* mask1 = 1 if a < b, else 0 */
+    unsigned long mask1 = (ua - ub) >> (sizeof(unsigned long)*8 - 1);
+    unsigned long m = (unsigned long)0 - mask1; /* all-ones if a<b, else 0 */
+    return (long)((ua & ~m) | (ub & m));
+}
+
+
 
 
 
@@ -80,7 +91,8 @@ long read_min( net )
     net->dummy_arcs = (arc_t *)  calloc( net->n,   sizeof(arc_t) );
     net->arcs       = (arc_t *)  calloc( net->max_m,   sizeof(arc_t) );
 
-    if( !( net->nodes && net->arcs && net->dummy_arcs ) )
+    /* Avoid short-circuit '&&' to assist lowering; explicitly booleanize and use bitwise '&' */
+    if( !(((net->nodes != NULL) & (net->arcs != NULL) & (net->dummy_arcs != NULL))) )
     {
       printf( "read_min(): not enough memory\n" );
       getfree( net );
@@ -116,8 +128,13 @@ long read_min( net )
     {
         fgets( instring, 200, in );
 
-        if( sscanf( instring, "%ld %ld", &t, &h ) != 2 || t > h )
-            exit(-1);
+        {
+            int __ok = sscanf( instring, "%ld %ld", &t, &h );
+            /* Avoid short-circuit OR and prevent reading uninitialized t,h when sscanf fails. */
+            int __bad = ((__ok != 2) | (t > h));
+            if (__bad)
+                exit(-1);
+        }
 
         node[i].number = -i;
         node[i].flow = (flow_t)-1;
@@ -148,7 +165,10 @@ long read_min( net )
 
         arc->tail = &(node[i]);
         arc->head = &(node[i+net->n_trips]);
-        arc->org_cost = arc->cost = (cost_t)(2*MAX(net->bigM,(long)BIGM));
+        {
+            long __maxBM = branchless_max_long((long)net->bigM, (long)BIGM);
+            arc->org_cost = arc->cost = (cost_t)(2 * __maxBM);
+        }
         arc->nextout = arc->tail->firstout;
         arc->tail->firstout = arc;
         arc->nextin = arc->head->firstin;
@@ -195,10 +215,11 @@ long read_min( net )
         
     for( i = 1; i <= net->n_trips; i++ )
     {
-        net->arcs[3*i-1].cost = 
-            (cost_t)((-2)*MAX(net->bigM,(long) BIGM));
-        net->arcs[3*i-1].org_cost = 
-            (cost_t)((-2)*(MAX(net->bigM,(long) BIGM)));
+        {
+            long __maxBM = branchless_max_long((long)net->bigM, (long)BIGM);
+            net->arcs[3*i-1].cost = (cost_t)((-2) * __maxBM);
+            net->arcs[3*i-1].org_cost = (cost_t)((-2) * __maxBM);
+        }
     }
     
     

@@ -1,0 +1,139 @@
+{
+  "profile_type": "profile_guided_offload",
+  "version": "1.0",
+  "baseline": {
+    "profile_type": "mcf_baseline",
+    "target": "x86_64",
+    "functions": {
+      "primal_bea_mpp": {
+        "calls": 123823,
+        "total_ns": 875650685,
+        "avg_ns": 7071.79,
+        "arcs_processed": 42030718,
+        "throughput_arcs_per_sec": 47999412.00,
+        "offload_candidate": true,
+        "parallelism": "embarrassingly_parallel"
+      },
+      "price_out_impl": {
+        "calls": 1,
+        "total_ns": 855675,
+        "avg_ns": 855675.00,
+        "arcs_generated": 0,
+        "throughput_arcs_per_sec": 0.00,
+        "offload_candidate": true,
+        "parallelism": "data_dependent"
+      },
+      "flow_cost": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.00,
+        "arcs_processed": 0,
+        "throughput_arcs_per_sec": 0.00,
+        "offload_candidate": true,
+        "parallelism": "reduction"
+      },
+      "refresh_potential": {
+        "calls": 621,
+        "total_ns": 950106480,
+        "offload_candidate": false,
+        "parallelism": "tree_traversal"
+      }
+    },
+    "overall": {
+      "simplex_iterations": 0,
+      "total_execution_ns": 2212440312,
+      "total_execution_ms": 2212.44
+    },
+    "offload_hints": {
+      "primary_target": "primal_bea_mpp",
+      "secondary_target": "price_out_impl",
+      "expected_speedup_pricing": 10.0,
+      "min_arcs_for_offload": 1000,
+      "data_transfer_cost_factor": 0.1
+    }
+  },
+  "vortex": {
+    "profile_type": "vortex_estimated",
+    "target": "riscv_vortex",
+    "timing": {
+      "kernel_latency_ns": 50000000,
+      "h2d_latency_ns": 10000000,
+      "d2h_latency_ns": 5000000
+    },
+    "bandwidth": {
+      "h2d_gbps": 10.0,
+      "d2h_gbps": 10.0
+    },
+    "prefetch_hints": {
+      "optimal_distance_bytes": 65536
+    }
+  },
+  "functions": {
+    "primal_bea_mpp": {
+      "calls": 123823,
+      "total_ns": 875650685,
+      "avg_ns": 7071.79,
+      "arcs_processed": 42030718,
+      "throughput_arcs_per_sec": 47999412.00,
+      "offload_candidate": true,
+      "parallelism": "embarrassingly_parallel"
+    },
+    "price_out_impl": {
+      "calls": 1,
+      "total_ns": 855675,
+      "avg_ns": 855675.00,
+      "arcs_generated": 0,
+      "throughput_arcs_per_sec": 0.00,
+      "offload_candidate": true,
+      "parallelism": "data_dependent"
+    },
+    "flow_cost": {
+      "calls": 0,
+      "total_ns": 0,
+      "avg_ns": 0.00,
+      "arcs_processed": 0,
+      "throughput_arcs_per_sec": 0.00,
+      "offload_candidate": true,
+      "parallelism": "reduction"
+    },
+    "refresh_potential": {
+      "calls": 621,
+      "total_ns": 950106480,
+      "offload_candidate": false,
+      "parallelism": "tree_traversal"
+    }
+  },
+  "overall": {
+    "simplex_iterations": 0,
+    "total_execution_ns": 2212440312,
+    "total_execution_ms": 2212.44
+  },
+  "offload_hints": {
+    "primary_target": "primal_bea_mpp",
+    "secondary_target": "price_out_impl",
+    "expected_speedup_pricing": 10.0,
+    "min_arcs_for_offload": 1000,
+    "data_transfer_cost_factor": 0.1
+  },
+  "timing": {
+    "kernel_latency_ns": 50000000,
+    "h2d_latency_ns": 10000000,
+    "d2h_latency_ns": 5000000
+  },
+  "bandwidth": {
+    "h2d_gbps": 10.0,
+    "d2h_gbps": 10.0
+  },
+  "prefetch_hints": {
+    "optimal_distance_bytes": 65536
+  },
+  "compilation_hints": {
+    "primary_offload_function": "primal_bea_mpp",
+    "target_architecture": "riscv_vortex",
+    "optimization_level": "O3",
+    "passes": [
+      "profile-guided-offload",
+      "convert-cira-to-llvm-vortex"
+    ]
+  }
+}

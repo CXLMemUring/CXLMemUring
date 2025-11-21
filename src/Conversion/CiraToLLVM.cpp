@@ -23,6 +23,7 @@ using namespace mlir::cira;
 enum class TargetArchitecture {
   X86,
   ARM,
+  RISCV_VORTEX,  // Vortex RISC-V SIMT (generates NVVM IR)
   Heterogeneous
 };
 
@@ -41,6 +42,8 @@ TargetArchitecture getTargetArchitecture(ModuleOp module) {
       return TargetArchitecture::X86;
     else if (targetArch == "arm")
       return TargetArchitecture::ARM;
+    else if (targetArch == "vortex" || targetArch == "riscv-vortex")
+      return TargetArchitecture::RISCV_VORTEX;
     else if (targetArch == "hetero")
       return TargetArchitecture::Heterogeneous;
   }
@@ -52,10 +55,84 @@ TargetArchitecture getTargetArchitecture(ModuleOp module) {
       return TargetArchitecture::X86;
     else if (triple.isARM() || triple.isAArch64())
       return TargetArchitecture::ARM;
+    else if (triple.isRISCV()) {
+      // Check for Vortex-specific markers
+      if (triple.getVendorName() == "vortex" ||
+          module->hasAttr("vortex.target"))
+        return TargetArchitecture::RISCV_VORTEX;
+    }
   }
 
   // Default to heterogeneous for CXLMemUring
   return TargetArchitecture::Heterogeneous;
+}
+
+//===----------------------------------------------------------------------===//
+// NVVM Intrinsic Generation for Vortex
+//===----------------------------------------------------------------------===//
+
+// Generate NVVM thread indexing intrinsics (map to Vortex vx_thread_id via CuPBoP)
+static Value generateNVVMThreadIdx(ConversionPatternRewriter &rewriter, Location loc) {
+  auto context = rewriter.getContext();
+  auto i32Type = IntegerType::get(context, 32);
+  auto tidFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.read.ptx.sreg.tid.x");
+  return rewriter.create<LLVM::CallOp>(loc, i32Type, tidFunc).getResult();
+}
+
+static Value generateNVVMBlockIdx(ConversionPatternRewriter &rewriter, Location loc) {
+  auto context = rewriter.getContext();
+  auto i32Type = IntegerType::get(context, 32);
+  auto bidFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.read.ptx.sreg.ctaid.x");
+  return rewriter.create<LLVM::CallOp>(loc, i32Type, bidFunc).getResult();
+}
+
+static Value generateNVVMBlockDim(ConversionPatternRewriter &rewriter, Location loc) {
+  auto context = rewriter.getContext();
+  auto i32Type = IntegerType::get(context, 32);
+  auto bdimFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.read.ptx.sreg.ntid.x");
+  return rewriter.create<LLVM::CallOp>(loc, i32Type, bdimFunc).getResult();
+}
+
+// Generate global thread ID: blockIdx.x * blockDim.x + threadIdx.x
+static Value generateGlobalThreadId(ConversionPatternRewriter &rewriter, Location loc) {
+  auto tid = generateNVVMThreadIdx(rewriter, loc);
+  auto bid = generateNVVMBlockIdx(rewriter, loc);
+  auto bdim = generateNVVMBlockDim(rewriter, loc);
+
+  auto mul = rewriter.create<LLVM::MulOp>(loc, bid, bdim);
+  return rewriter.create<LLVM::AddOp>(loc, tid, mul);
+}
+
+// Generate NVVM warp-level intrinsics (map to Vortex vx_* intrinsics)
+static void generateNVVMBarrier(ConversionPatternRewriter &rewriter, Location loc) {
+  auto context = rewriter.getContext();
+  auto barrierFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.barrier0");
+  rewriter.create<LLVM::CallOp>(loc, TypeRange{}, barrierFunc, ValueRange{});
+}
+
+static Value generateNVVMBallot(ConversionPatternRewriter &rewriter, Location loc, Value predicate) {
+  auto context = rewriter.getContext();
+  auto i32Type = IntegerType::get(context, 32);
+  auto ballotFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.vote.ballot.sync");
+
+  // All-active mask for warp (0xFFFFFFFF)
+  auto mask = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(-1));
+
+  return rewriter.create<LLVM::CallOp>(loc, i32Type, ballotFunc,
+                                        ValueRange{mask, predicate}).getResult();
+}
+
+static Value generateNVVMShfl(ConversionPatternRewriter &rewriter, Location loc,
+                              Value var, Value lane) {
+  auto context = rewriter.getContext();
+  auto i32Type = IntegerType::get(context, 32);
+  auto shflFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.shfl.sync.idx.i32");
+
+  auto mask = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(-1));
+  auto warpSize = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(32));
+
+  return rewriter.create<LLVM::CallOp>(loc, i32Type, shflFunc,
+                                        ValueRange{mask, var, lane, warpSize}).getResult();
 }
 
 //===----------------------------------------------------------------------===//
@@ -224,6 +301,20 @@ static void emitPrefetchForTarget(ConversionPatternRewriter &rewriter, Location 
     rewriter.create<LLVM::CallOp>(loc, TypeRange{}, prefetchFunc,
                                    ValueRange{addr, rw, target, stream, keep});
   }
+
+  if (arch == TargetArchitecture::RISCV_VORTEX) {
+    // NVVM prefetch intrinsic (maps to Vortex vx_prefetch_l1 via CuPBoP)
+    // Use NVVM's prefetch.global intrinsic which CuPBoP translates
+    auto prefetchFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.prefetch.global");
+    auto i32Type = IntegerType::get(context, 32);
+
+    // level=1 (L1 cache), hint=0 (load)
+    auto level = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(1));
+    auto hint = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(0));
+
+    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, prefetchFunc,
+                                   ValueRange{addr, level, hint});
+  }
 }
 
 /// Convert cira.offload.evict_edge to LLVM operations
@@ -251,6 +342,13 @@ struct EvictEdgeOpLowering : public ConversionPattern {
       // ARM: Use DC CIVAC (Clean and Invalidate by VA to PoC)
       auto dcFunc = FlatSymbolRefAttr::get(context, "llvm.aarch64.dc.civac");
       rewriter.create<LLVM::CallOp>(loc, TypeRange{}, dcFunc, operands[0]);
+    }
+
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      // Vortex: Use memory fence to flush cache
+      // NVVM doesn't have a direct evict, so use a fence to ensure coherency
+      auto fenceFunc = FlatSymbolRefAttr::get(context, "llvm.nvvm.membar.gl");
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, fenceFunc, ValueRange{});
     }
 
     rewriter.eraseOp(op);
@@ -392,6 +490,79 @@ struct ConvertCiraToLLVMARMPass
   }
 };
 
+// Specialized pass for Vortex RISC-V SIMT target
+struct ConvertCiraToLLVMVortexPass
+    : public PassWrapper<ConvertCiraToLLVMVortexPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertCiraToLLVMVortexPass)
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
+  StringRef getArgument() const final { return "convert-cira-to-llvm-vortex"; }
+  StringRef getDescription() const final {
+    return "Convert Cira dialect to NVVM IR for Vortex RISC-V SIMT target";
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    // Set target triple for NVVM (will be translated to RISC-V via CuPBoP)
+    module->setAttr("llvm.target_triple",
+                    StringAttr::get(&getContext(), "nvptx64-nvidia-cuda"));
+
+    // Mark module as Vortex target for backend processing
+    module->setAttr("vortex.target", UnitAttr::get(&getContext()));
+
+    // Set data layout for NVVM
+    module->setAttr("llvm.data_layout",
+                    StringAttr::get(&getContext(),
+                      "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-"
+                      "i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-"
+                      "v64:64:64-v128:128:128-n16:32:64"));
+
+    // Mark functions as CUDA kernels
+    module.walk([&](func::FuncOp func) {
+      // Functions containing offload operations become kernels
+      bool hasOffload = false;
+      func.walk([&](Operation *op) {
+        if (isa<LoadEdgeOp, LoadNodeOp, EvictEdgeOp>(op)) {
+          hasOffload = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+
+      if (hasOffload) {
+        // Mark as CUDA kernel
+        func->setAttr("nvvm.kernel", UnitAttr::get(&getContext()));
+
+        // Add kernel metadata (max threads per block)
+        func->setAttr("nvvm.maxntid",
+                     DenseI32ArrayAttr::get(&getContext(), {256, 1, 1}));
+      }
+    });
+
+    LLVMTypeConverter converter(&getContext());
+    RewritePatternSet patterns(&getContext());
+    LLVMConversionTarget target(getContext());
+
+    target.addIllegalDialect<RemoteMemDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect>();
+    target.addLegalDialect<cir::CIRDialect>();
+    target.addLegalDialect<scf::SCFDialect>();
+    target.addLegalDialect<cf::ControlFlowDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<memref::MemRefDialect>();
+
+    populateCiraToLLVMConversionPatternsImpl(converter, patterns, TargetArchitecture::RISCV_VORTEX);
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns))))
+      signalPassFailure();
+  }
+};
+
 // Heterogeneous pass that partitions code for both architectures
 struct ConvertCiraToLLVMHeteroPass
     : public PassWrapper<ConvertCiraToLLVMHeteroPass, OperationPass<ModuleOp>> {
@@ -500,6 +671,10 @@ std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMX86Pass() {
 
 std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMARMPass() {
   return std::make_unique<ConvertCiraToLLVMARMPass>();
+}
+
+std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMVortexPass() {
+  return std::make_unique<ConvertCiraToLLVMVortexPass>();
 }
 
 std::unique_ptr<Pass> mlir::cira::createConvertCiraToLLVMHeteroPass() {

@@ -3,13 +3,46 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-CLANGIR_BIN="${CLANGIR_BIN:-$(command -v clang++ || true)}"
-CLANGIR_OPT_BIN="${CLANGIR_OPT_BIN:-$(command -v cir-opt || true)}"
+LOCAL_CLANG_BIN="${REPO_ROOT}/llvm/build/bin/clang"
+LOCAL_CIR_OPT_BIN="${REPO_ROOT}/llvm/build/bin/cir-opt"
+LOCAL_MLIR_TRANSLATE_BIN="${REPO_ROOT}/llvm/build/bin/mlir-translate"
+LOCAL_LLC_BIN="${REPO_ROOT}/llvm/build/bin/llc"
+
+# Prefer repo-built toolchain if available; fallback to system.
+if [[ -z "${CLANGIR_BIN:-}" ]]; then
+  if [[ -x "${LOCAL_CLANG_BIN}" ]]; then
+    CLANGIR_BIN="${LOCAL_CLANG_BIN}"
+  else
+    CLANGIR_BIN="$(command -v clang++ || true)"
+  fi
+fi
+if [[ -z "${CLANGIR_OPT_BIN:-}" ]]; then
+  if [[ -x "${LOCAL_CIR_OPT_BIN}" ]]; then
+    CLANGIR_OPT_BIN="${LOCAL_CIR_OPT_BIN}"
+  else
+    CLANGIR_OPT_BIN="$(command -v cir-opt || true)"
+  fi
+fi
 CIRA_BIN="${CIRA_BIN:-${REPO_ROOT}/build/bin/cira}"
-MLIR_TRANSLATE_BIN="${MLIR_TRANSLATE_BIN:-$(command -v mlir-translate || true)}"
-LLC_BIN="${LLC_BIN:-$(command -v llc || true)}"
-LINKER_BIN="${LINKER_BIN:-$(command -v clang++ || true)}"
+if [[ -z "${MLIR_TRANSLATE_BIN:-}" ]]; then
+  if [[ -x "${LOCAL_MLIR_TRANSLATE_BIN}" ]]; then
+    MLIR_TRANSLATE_BIN="${LOCAL_MLIR_TRANSLATE_BIN}"
+  else
+    MLIR_TRANSLATE_BIN="$(command -v mlir-translate || true)"
+  fi
+fi
+if [[ -z "${LLC_BIN:-}" ]]; then
+  if [[ -x "${LOCAL_LLC_BIN}" ]]; then
+    LLC_BIN="${LOCAL_LLC_BIN}"
+  else
+    LLC_BIN="$(command -v llc || true)"
+  fi
+fi
+# Use the same compiler for linking as for compiling by default.
+LINKER_BIN="${LINKER_BIN:-${CLANGIR_BIN}}"
 RUNTIME_LIB_DIR="${RUNTIME_LIB_DIR:-${REPO_ROOT}/build/lib}"
+WORK_BASE_DIR="${PIPELINE_WORK_ROOT:-${REPO_ROOT}/build}"
+BIN_BASE_DIR="${PIPELINE_BIN_ROOT:-${REPO_ROOT}/bin}"
 
 LOG_PREFIX="build"
 
@@ -75,6 +108,17 @@ append_includes_from_env() {
   done
 }
 
+ensure_dir_writable() {
+  local dir="$1"
+  mkdir -p "${dir}" 2>/dev/null || true
+  if [[ ! -d "${dir}" ]]; then
+    die "Failed to create build directory '${dir}'. Check permissions or set PIPELINE_WORK_ROOT/PIPELINE_BIN_ROOT."
+  fi
+  if [[ ! -w "${dir}" ]]; then
+    die "Build directory '${dir}' is not writable. Adjust permissions or override PIPELINE_WORK_ROOT/PIPELINE_BIN_ROOT."
+  fi
+}
+
 if (( $# > 1 )); then
   die "Usage: $(basename "$0") [gapbs|mcf|llama.cpp|monetdb|dataframe]"
 fi
@@ -87,6 +131,11 @@ Builds the requested benchmark (default: gapbs) through the ClangIR -> Cira pipe
 Aliases:
   llama.cpp -> llama, llama_cpp
   dataframe -> df
+
+Environment overrides:
+  PIPELINE_WORK_ROOT  Base directory for intermediate build artifacts (default: \
+                     "${REPO_ROOT}/build")
+  PIPELINE_BIN_ROOT   Base directory for linked binaries (default: "${REPO_ROOT}/bin")
 EOF
   exit 0
 fi
@@ -112,15 +161,15 @@ case "${BENCHMARK_KEY}" in
   gapbs)
     BENCHMARK_ID="GAPBS"
     SOURCE_DIRS=("${REPO_ROOT}/bench/gapbs/src")
-    WORK_ROOT="${REPO_ROOT}/build/gapbs_pipeline"
-    BIN_ROOT="${REPO_ROOT}/bin/gapbs"
+    WORK_ROOT="${WORK_BASE_DIR}/gapbs_pipeline"
+    BIN_ROOT="${BIN_BASE_DIR}/gapbs"
     BIN_NAME="gapbs"
     ;;
   mcf)
     BENCHMARK_ID="MCF"
     SOURCE_DIRS=("${REPO_ROOT}/bench/mcf")
-    WORK_ROOT="${REPO_ROOT}/build/mcf_pipeline"
-    BIN_ROOT="${REPO_ROOT}/bin/mcf"
+    WORK_ROOT="${WORK_BASE_DIR}/mcf_pipeline"
+    BIN_ROOT="${BIN_BASE_DIR}/mcf"
     BIN_NAME="mcf"
     ;;
   llama.cpp|llama|llama_cpp)
@@ -145,6 +194,7 @@ case "${BENCHMARK_KEY}" in
       "/ggml/src/ggml-webgpu/"
       "/ggml/src/ggml-zdnn/"
       "/ggml/src/ggml-vulkan/"
+      "/src/llama-adapter.cpp"
     )
     EXTRA_SOURCES=("${REPO_ROOT}/bench/llama.cpp/examples/simple/simple.cpp")
     BENCHMARK_EXTRA_INCLUDES=(
@@ -157,8 +207,8 @@ case "${BENCHMARK_KEY}" in
     BENCHMARK_EXTRA_CFLAGS+=(-D_GNU_SOURCE)
     BENCHMARK_EXTRA_CXXFLAGS+=(-fexceptions -frtti -D_GNU_SOURCE)
     BENCHMARK_EXTRA_LDFLAGS=(-lpthread -ldl -lm)
-    WORK_ROOT="${REPO_ROOT}/build/llama_pipeline"
-    BIN_ROOT="${REPO_ROOT}/bin/llama.cpp"
+    WORK_ROOT="${WORK_BASE_DIR}/llama_pipeline"
+    BIN_ROOT="${BIN_BASE_DIR}/llama.cpp"
     BIN_NAME="llama-simple"
     ;;
   monetdb)
@@ -204,8 +254,8 @@ case "${BENCHMARK_KEY}" in
     )
     BENCHMARK_EXTRA_CFLAGS+=(-D_GNU_SOURCE)
     BENCHMARK_EXTRA_LDFLAGS=(-lpthread -ldl -lm)
-    WORK_ROOT="${REPO_ROOT}/build/monetdb_pipeline"
-    BIN_ROOT="${REPO_ROOT}/bin/monetdb"
+    WORK_ROOT="${WORK_BASE_DIR}/monetdb_pipeline"
+    BIN_ROOT="${BIN_BASE_DIR}/monetdb"
     BIN_NAME="mserver5"
     ;;
   dataframe|df)
@@ -218,8 +268,8 @@ case "${BENCHMARK_KEY}" in
     if [[ "$(uname -s 2>/dev/null)" == "Linux" ]]; then
       BENCHMARK_EXTRA_LDFLAGS+=(-lrt)
     fi
-    WORK_ROOT="${REPO_ROOT}/build/dataframe_pipeline"
-    BIN_ROOT="${REPO_ROOT}/bin/dataframe"
+    WORK_ROOT="${WORK_BASE_DIR}/dataframe_pipeline"
+    BIN_ROOT="${BIN_BASE_DIR}/dataframe"
     BIN_NAME="dataframe_benchmark"
     ;;
   *)
@@ -265,7 +315,8 @@ done
 [[ -n "${LINKER_BIN}" && -x "${LINKER_BIN}" ]] || die "clang++ linker not found (set LINKER_BIN)"
 [[ -d "${RUNTIME_LIB_DIR}" ]] || die "Cira runtime library directory missing (${RUNTIME_LIB_DIR})"
 
-mkdir -p "${WORK_ROOT}" "${BIN_ROOT}"
+ensure_dir_writable "${WORK_ROOT}"
+ensure_dir_writable "${BIN_ROOT}"
 
 CIR_DIR="${WORK_ROOT}/cir"
 MLIR_DIR="${WORK_ROOT}/mlir"
@@ -274,7 +325,7 @@ LLVM_DIR="${WORK_ROOT}/llvm"
 OBJ_DIR="${WORK_ROOT}/obj"
 
 for dir in "${CIR_DIR}" "${MLIR_DIR}" "${CIRA_DIR}" "${LLVM_DIR}" "${OBJ_DIR}"; do
-  mkdir -p "${dir}"
+  ensure_dir_writable "${dir}"
 done
 
 COMMON_FLAGS=(-O3)
@@ -314,10 +365,11 @@ LINK_FLAGS+=("${BENCHMARK_EXTRA_LDFLAGS[@]}")
 append_flags_from_env PIPELINE_EXTRA_LDFLAGS LINK_FLAGS
 append_flags_from_env "${BENCHMARK_ID}_EXTRA_LDFLAGS" LINK_FLAGS
 
-ARCHES=("x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu")
+ARCHES=("x86_64-unknown-linux-gnu" "riscv64-unknown-linux-gnu")
 LL_FILES=()
 
 info "Translating ${BENCHMARK} sources through ClangIR and Cira"
+X86_ARCH="x86_64-unknown-linux-gnu"
 for src in "${SOURCES[@]}"; do
   if [[ "${src}" == "${REPO_ROOT}/"* ]]; then
     rel="${src#${REPO_ROOT}/}"
@@ -331,7 +383,10 @@ for src in "${SOURCES[@]}"; do
   llvm_mlir_path="${LLVM_DIR}/${stem}.llvm.mlir"
   llvm_path="${LLVM_DIR}/${stem}.ll"
 
-  mkdir -p "$(dirname "${cir_path}")" "$(dirname "${mlir_path}")" "$(dirname "${cira_path}")" "$(dirname "${llvm_path}")"
+  ensure_dir_writable "$(dirname "${cir_path}")"
+  ensure_dir_writable "$(dirname "${mlir_path}")"
+  ensure_dir_writable "$(dirname "${cira_path}")"
+  ensure_dir_writable "$(dirname "${llvm_path}")"
 
   info "  > ${rel}"
   ext="${src##*.}"
@@ -346,25 +401,101 @@ for src in "${SOURCES[@]}"; do
   esac
 
 
+  # Workaround: llama-arch.cpp triggers a CIR frontend crash due to extremely
+  # large nested initializer lists. Compile it natively for x86_64 and bypass
+  # the CIR/MLIR pipeline for this translation unit.
+  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && "${src}" == */llama-arch.cpp ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ensure_dir_writable "$(dirname "${obj}")"
+    # Compile with optimizations fully disabled to avoid optimizer (SROA)
+    # crashes on the enormous global initializer in this TU. Ensure -O0 and
+    # -Xclang -disable-llvm-passes are applied after any inherited flags.
+    "${LINKER_BIN}" -target "${X86_ARCH}" -c -fno-strict-aliasing \
+      "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O0 -fno-vectorize -fno-slp-vectorize -fno-inline \
+      -Xclang -disable-llvm-passes \
+      -o "${obj}"
+    # Skip CIR/MLIR for this file.
+    continue
+  fi
+
   "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}"
   "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
 
-  "${CIRA_BIN}" -allow-unregistered-dialect "${mlir_path}" \
-    --cir-to-cira --rmem-search-remote -o "${cira_path}.unfixed"
+  if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" ]]; then
+    # Direct CIR -> MLIR -> LLVM dialect lowering and export
+    direct_clean_path="${LLVM_DIR}/${stem}.clean.llvm.mlir"
+    ensure_dir_writable "$(dirname "${direct_clean_path}")"
 
-  # Fix scf.while blocks by adding missing scf.yield terminators
-  python3 "${REPO_ROOT}/scripts/fix_scf_while_yields.py" "${cira_path}.unfixed" "${cira_path}"
-  rm -f "${cira_path}.unfixed"
+    # Build pass list for direct CIR -> MLIR -> LLVM lowering. FlattenCFG can
+    # be brittle for some TUs (e.g., DataFrame, LLAMACPP). Use it only for MCF
+    # where we rely on aggressive CFG simplification to help later legalizers.
+    PASS_FLAGS=(--allow-unregistered-dialect)
+    if [[ "${BENCHMARK_ID}" == "MCF" ]]; then
+      PASS_FLAGS+=(--cir-flatten-cfg)
+    fi
+    PASS_FLAGS+=(--cir-goto-solver --cir-to-mlir --cir-mlir-to-llvm --reconcile-unrealized-casts)
 
-  "${CIRA_BIN}" -allow-unregistered-dialect \
-    --pass-pipeline='builtin.module(convert-cira-to-llvm-hetero,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
-    "${cira_path}" -o "${llvm_mlir_path}.dirty"
+    "${CLANGIR_OPT_BIN}" "${PASS_FLAGS[@]}" "${cir_path}" -o "${direct_clean_path}"
 
-  python3 "${REPO_ROOT}/scripts/cleanup_unrealized_casts.py" "${llvm_mlir_path}.dirty" > "${llvm_mlir_path}.tmp"
-  python3 "${REPO_ROOT}/scripts/remove_leftover_scf.py" "${llvm_mlir_path}.tmp" "${llvm_mlir_path}"
-  rm -f "${llvm_mlir_path}.dirty" "${llvm_mlir_path}.tmp"
+    # Scrub unrealized casts and any leftover scf/cf branches before export
+    python3 "${REPO_ROOT}/scripts/cleanup_unrealized_casts.py" "${direct_clean_path}" > "${llvm_mlir_path}.tmp"
+    python3 "${REPO_ROOT}/scripts/remove_leftover_scf.py" "${llvm_mlir_path}.tmp" "${llvm_mlir_path}"
+    rm -f "${llvm_mlir_path}.tmp"
 
-  "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir "${llvm_mlir_path}" -o "${llvm_path}"
+    "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir \
+      "${llvm_mlir_path}" -o "${llvm_path}"
+  else
+    # Heterogeneous path via CIRA as before
+    "${CIRA_BIN}" -allow-unregistered-dialect "${mlir_path}" \
+      --cir-to-cira --rmem-search-remote -o "${cira_path}.unfixed"
+
+    # Fix scf.while blocks by adding missing scf.yield terminators
+    python3 "${REPO_ROOT}/scripts/fix_scf_while_yields.py" "${cira_path}.unfixed" "${cira_path}"
+    rm -f "${cira_path}.unfixed"
+
+    # Apply profile-guided offload pass if profile is available
+    if [[ -n "${DISAGG_PROFILE_PATH:-}" && -f "${DISAGG_PROFILE_PATH}" ]]; then
+      info "Applying profile-guided offload decisions from ${DISAGG_PROFILE_PATH}"
+
+      # Determine offload target (default to vortex)
+      OFFLOAD_TARGET_FLAG="${OFFLOAD_TARGET:-vortex}"
+      MIN_OFFLOAD_ELEMENTS="${MIN_OFFLOAD_ELEMENTS:-1000}"
+      SPEEDUP_THRESHOLD="${SPEEDUP_THRESHOLD:-1.5}"
+
+      # Apply profile-guided pass
+      "${CIRA_BIN}" -allow-unregistered-dialect \
+        --profile-guided-offload \
+        --offload-profile="${DISAGG_PROFILE_PATH}" \
+        --offload-target="${OFFLOAD_TARGET_FLAG}" \
+        --min-offload-elements="${MIN_OFFLOAD_ELEMENTS}" \
+        --speedup-threshold="${SPEEDUP_THRESHOLD}" \
+        "${cira_path}" -o "${cira_path}.pgo"
+
+      mv "${cira_path}.pgo" "${cira_path}"
+    fi
+
+    # Select conversion pass based on offload target
+    if [[ "${OFFLOAD_TARGET:-}" == "vortex" ]]; then
+      # Use Vortex-specific lowering for GPU offload
+      "${CIRA_BIN}" -allow-unregistered-dialect \
+        --pass-pipeline='builtin.module(convert-cira-to-llvm-vortex,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
+        "${cira_path}" -o "${llvm_mlir_path}.dirty"
+    else
+      # Default heterogeneous lowering
+      "${CIRA_BIN}" -allow-unregistered-dialect \
+        --pass-pipeline='builtin.module(convert-cira-to-llvm-hetero,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
+        "${cira_path}" -o "${llvm_mlir_path}.dirty"
+    fi
+
+    python3 "${REPO_ROOT}/scripts/cleanup_unrealized_casts.py" "${llvm_mlir_path}.dirty" > "${llvm_mlir_path}.tmp"
+    python3 "${REPO_ROOT}/scripts/remove_leftover_scf.py" "${llvm_mlir_path}.tmp" "${llvm_mlir_path}"
+    rm -f "${llvm_mlir_path}.dirty" "${llvm_mlir_path}.tmp"
+
+    "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir "${llvm_mlir_path}" -o "${llvm_path}"
+  fi
 
 
   LL_FILES+=("${llvm_path}")
@@ -373,13 +504,15 @@ done
 info "Lowering Cira output to target objects"
 for arch in "${ARCHES[@]}"; do
   arch_dir="${OBJ_DIR}/${arch}"
-  mkdir -p "${arch_dir}"
+  ensure_dir_writable "${arch_dir}"
   for ll in "${LL_FILES[@]}"; do
     rel="${ll#${LLVM_DIR}/}"
     stem="${rel%.ll}"
     obj="${arch_dir}/${stem}.o"
-    mkdir -p "$(dirname "${obj}")"
-    "${LLC_BIN}" -filetype=obj -relocation-model=pic -mtriple="${arch}" "${ll}" -o "${obj}"
+    ensure_dir_writable "$(dirname "${obj}")"
+    # Work around an LLVM CodeGenPrepare crash on some degenerate CFGs by
+    # disabling CGP entirely for llc on these IR files.
+    "${LLC_BIN}" -filetype=obj -relocation-model=pic -disable-cgp -mtriple="${arch}" "${ll}" -o "${obj}"
   done
 done
 
@@ -390,49 +523,49 @@ if [[ "${SKIP_LINK}" != "true" ]]; then
   mapfile -t X86_OBJS < <(find "${X86_OBJ_DIR}" -type f -name '*.o' -print | sort)
   (( ${#X86_OBJS[@]} > 0 )) || die "No x86_64 object files to link"
 
-  mkdir -p "${BIN_ROOT}/${X86_ARCH}"
+  ensure_dir_writable "${BIN_ROOT}/${X86_ARCH}"
   "${LINKER_BIN}" -target "${X86_ARCH}" "${X86_OBJS[@]}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${BIN_NAME}"
 else
   info "Skipping binary linkage for ${BENCHMARK} (configured to skip)"
 fi
 
-AARCH64_ARCH="aarch64-unknown-linux-gnu"
-mkdir -p "${BIN_ROOT}/${AARCH64_ARCH}"
+RISCV64_ARCH="riscv64-unknown-linux-gnu"
+ensure_dir_writable "${BIN_ROOT}/${RISCV64_ARCH}"
 
-# Check if we should build heterogeneous aarch64 binary
+# Check if we should build heterogeneous riscv64 binary
 if [[ "${BUILD_HETERO:-false}" == "true" ]] || [[ "${BENCHMARK}" == "mcf" ]]; then
-  info "Linking aarch64 binary with x86 memory offloading"
-  AARCH64_OBJ_DIR="${OBJ_DIR}/${AARCH64_ARCH}"
-  mapfile -t AARCH64_OBJS < <(find "${AARCH64_OBJ_DIR}" -type f -name '*.o' -print | sort)
+  info "Linking riscv64 binary with x86 memory offloading"
+  RISCV64_OBJ_DIR="${OBJ_DIR}/${RISCV64_ARCH}"
+  mapfile -t RISCV64_OBJS < <(find "${RISCV64_OBJ_DIR}" -type f -name '*.o' -print | sort)
 
-  if (( ${#AARCH64_OBJS[@]} > 0 )); then
-    # Link aarch64 binary with cross-compilation support
-    # Note: This requires aarch64 cross-compilation toolchain
-    if command -v aarch64-linux-gnu-g++ &> /dev/null; then
+  if (( ${#RISCV64_OBJS[@]} > 0 )); then
+    # Link riscv64 binary with cross-compilation support
+    # Note: This requires riscv64 cross-compilation toolchain
+    if command -v riscv64-linux-gnu-g++ &> /dev/null; then
       # Compile compiler runtime stubs if needed
-      STUB_FILE="${REPO_ROOT}/runtime/compiler_rt_stubs_aarch64.o"
+      STUB_FILE="${REPO_ROOT}/runtime/compiler_rt_stubs_riscv64.o"
       if [[ ! -f "${STUB_FILE}" ]]; then
         if [[ -f "${REPO_ROOT}/runtime/compiler_rt_stubs.c" ]]; then
-          aarch64-linux-gnu-gcc -c "${REPO_ROOT}/runtime/compiler_rt_stubs.c" -o "${STUB_FILE}" 2>/dev/null
+          riscv64-linux-gnu-gcc -c "${REPO_ROOT}/runtime/compiler_rt_stubs.c" -o "${STUB_FILE}" 2>/dev/null
         fi
       fi
 
       # Link with stubs if available
-      LINK_OBJS=("${AARCH64_OBJS[@]}")
+      LINK_OBJS=("${RISCV64_OBJS[@]}")
       [[ -f "${STUB_FILE}" ]] && LINK_OBJS+=("${STUB_FILE}")
 
-      aarch64-linux-gnu-g++ "${LINK_OBJS[@]}" \
-        -o "${BIN_ROOT}/${AARCH64_ARCH}/${BIN_NAME}" 2>/dev/null || {
-          info "  Note: aarch64 linking failed, copying objects instead"
-          find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+      riscv64-linux-gnu-g++ "${LINK_OBJS[@]}" \
+        -o "${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}" 2>/dev/null || {
+          info "  Note: riscv64 linking failed, copying objects instead"
+          find "${OBJ_DIR}/${RISCV64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${RISCV64_ARCH}" \;
         }
     else
-      info "  Note: aarch64-linux-gnu-g++ not found, copying objects for manual linking"
-      find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+      info "  Note: riscv64-linux-gnu-g++ not found, copying objects for manual linking"
+      find "${OBJ_DIR}/${RISCV64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${RISCV64_ARCH}" \;
     fi
   fi
 else
-  find "${OBJ_DIR}/${AARCH64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${AARCH64_ARCH}" \;
+  find "${OBJ_DIR}/${RISCV64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${RISCV64_ARCH}" \;
 fi
 
 info "Build completed"
@@ -442,10 +575,10 @@ else
   info "  x86_64 objects available under ${OBJ_DIR}/${X86_ARCH} (link step skipped)"
 fi
 
-# Check if aarch64 binary was created
-if [[ -f "${BIN_ROOT}/${AARCH64_ARCH}/${BIN_NAME}" ]]; then
-  info "  aarch64 binary: ${BIN_ROOT}/${AARCH64_ARCH}/${BIN_NAME}"
+# Check if riscv64 binary was created
+if [[ -f "${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}" ]]; then
+  info "  riscv64 binary: ${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}"
 else
-  info "  aarch64 objects: ${BIN_ROOT}/${AARCH64_ARCH}"
-  info "Use aarch64-linux-gnu-g++ to link the objects with -lcira_runtime"
+  info "  riscv64 objects: ${BIN_ROOT}/${RISCV64_ARCH}"
+  info "Use riscv64-linux-gnu-g++ to link the objects with -lcira_runtime"
 fi

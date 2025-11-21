@@ -7,7 +7,11 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef __cplusplus
 #include <cstring>
+#else
+#include <string.h>
+#endif
 // 共享内存名称和信号量名称
 #define SHM_NAME "/btree_shared_mem"
 #define SEM_REQUEST_NAME "/btree_request_sem"

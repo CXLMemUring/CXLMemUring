@@ -1,0 +1,16 @@
+{
+  "profile_type": "vortex_estimated",
+  "target": "riscv_vortex",
+  "timing": {
+    "kernel_latency_ns": 50000000,
+    "h2d_latency_ns": 10000000,
+    "d2h_latency_ns": 5000000
+  },
+  "bandwidth": {
+    "h2d_gbps": 10.0,
+    "d2h_gbps": 10.0
+  },
+  "prefetch_hints": {
+    "optimal_distance_bytes": 65536
+  }
+}

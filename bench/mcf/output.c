@@ -64,8 +64,11 @@ long write_circulations( outfile, net )
 
                 // fprintf( out, "%d\n", - arc->head->number );
                 arc2 = arc->head[net->n_trips].firstout; 
-                while( arc2 && !arc2->flow )
-                    arc2 = arc2->nextout;
+                while( arc2 )
+                    if (arc2->flow)
+                        break;
+                    else
+                        arc2 = arc2->nextout;
                 if( !arc2 )
                 {
                     fclose( out );

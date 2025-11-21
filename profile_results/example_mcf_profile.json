@@ -1,0 +1,51 @@
+{
+  "profile_type": "mcf_baseline",
+  "target": "x86_64",
+  "functions": {
+    "primal_bea_mpp": {
+      "calls": 15000,
+      "total_ns": 450000000,
+      "avg_ns": 30000.0,
+      "arcs_processed": 75000000,
+      "throughput_arcs_per_sec": 166666666.67,
+      "offload_candidate": true,
+      "parallelism": "embarrassingly_parallel"
+    },
+    "price_out_impl": {
+      "calls": 50,
+      "total_ns": 120000000,
+      "avg_ns": 2400000.0,
+      "arcs_generated": 500000,
+      "throughput_arcs_per_sec": 4166666.67,
+      "offload_candidate": true,
+      "parallelism": "data_dependent"
+    },
+    "flow_cost": {
+      "calls": 100,
+      "total_ns": 25000000,
+      "avg_ns": 250000.0,
+      "arcs_processed": 20000000,
+      "throughput_arcs_per_sec": 800000000.0,
+      "offload_candidate": true,
+      "parallelism": "reduction"
+    },
+    "refresh_potential": {
+      "calls": 75,
+      "total_ns": 18000000,
+      "offload_candidate": false,
+      "parallelism": "tree_traversal"
+    }
+  },
+  "overall": {
+    "simplex_iterations": 15000,
+    "total_execution_ns": 850000000,
+    "total_execution_ms": 850.0
+  },
+  "offload_hints": {
+    "primary_target": "primal_bea_mpp",
+    "secondary_target": "price_out_impl",
+    "expected_speedup_pricing": 10.0,
+    "min_arcs_for_offload": 1000,
+    "data_transfer_cost_factor": 0.1
+  }
+}

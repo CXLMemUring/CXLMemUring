@@ -1,0 +1,20 @@
+{
+  "kernel": "vector_add",
+  "timing": {
+    "h2d_bytes": 1024,
+    "d2h_bytes": 512,
+    "h2d_latency_ns": 19866,
+    "kernel_latency_ns": 73715639,
+    "d2h_latency_ns": 11091,
+    "total_latency_ns": 79212723
+  },
+  "bandwidth": {
+    "h2d_gbps": 0.051545,
+    "d2h_gbps": 0.046164
+  },
+  "prefetch_hints": {
+    "optimal_distance_bytes": 3601337,
+    "min_overlap_window_ns": 1310,
+    "kernel_throughput_eps": 1736.40
+  }
+}

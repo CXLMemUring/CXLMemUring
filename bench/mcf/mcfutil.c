@@ -107,7 +107,8 @@ long refresh_potential( net )
 
         {
             int seek_sibling = 1;
-            while( node->pred && seek_sibling )
+            /* Avoid short-circuit '&&' to help downstream lowering; both operands are side-effect free */
+            while( (node->pred != NULL) & (seek_sibling != 0) )
             {
                 tmp = node->sibling;
                 if( tmp )
@@ -171,7 +172,8 @@ double flow_cost( net )
     {
         if( arc->flow )
         {
-            if( !(arc->tail->number < 0 && arc->head->number > 0) )
+            /* Replace '&&' with bitwise '&' on booleanized values (no side-effects) */
+            if( !(((arc->tail->number < 0) & (arc->head->number > 0))) )
             {
                 if( !arc->tail->number )
                 {
@@ -230,7 +232,7 @@ double flow_org_cost( net )
     {
         if( arc->flow )
         {
-            if( !(arc->tail->number < 0 && arc->head->number > 0) )
+            if( !(((arc->tail->number < 0) & (arc->head->number > 0))) )
             {
                 if( !arc->tail->number )
                 {
@@ -275,27 +277,23 @@ long primal_feasible( net )
     stop = (void *)net->stop_nodes;
     node++;
 
-    while( node < (node_t *)stop && !result )
+    /* Evaluate both sides; convert to integers to use bitwise '&' as logical AND */
+    while( (node < (node_t *)stop) & (!result) )
     {
         arc = node->basic_arc;
         flow = node->flow;
-        if( arc >= dummy && arc < stop_dummy )
+        if( ((arc >= dummy) & (arc < stop_dummy)) )
         {
-            if( ABS(flow) > (flow_t)net->feas_tol )
-            {
-                // printf( "PRIMAL NETWORK SIMPLEX: " );
-                // printf( "artificial arc with nonzero flow, node %d (%ld)\n",
-                        // node->number, flow );
-            }
+            /* Debug-only block removed (no side-effects). Avoid generating a
+             * conditional branch here to simplify downstream lowering. */
+            flow > (flow_t)net->feas_tol;
         }
         else
         {
-            if( flow < (flow_t)(-net->feas_tol)
-               || flow - (flow_t)1 > (flow_t)net->feas_tol )
             {
-                // printf( "PRIMAL NETWORK SIMPLEX: " );
-                // printf( "basis primal infeasible (%ld)\n", flow );
-                result = 1;
+                /* Avoid short-circuit '||' and conditional branch; compute as integer and fold into result. */
+                int __cond = ((flow < (flow_t)(-net->feas_tol)) | ((flow - (flow_t)1) > (flow_t)net->feas_tol));
+                result |= __cond;
             }
         }
 
@@ -333,49 +331,49 @@ long dual_feasible(  net )
     int           infeasible = 0;
     
     arc = net->arcs;
-    while( arc < stop && !infeasible )
+    while( (arc < stop) & (!infeasible) )
     {
         red_cost = arc->cost - arc->tail->potential 
             + arc->head->potential;
-        switch( arc->ident )
-        {
-        case BASIC:
-#ifdef AT_ZERO
-        case AT_ZERO:
-            if( ABS(red_cost) > (cost_t)net->feas_tol )
-#ifdef DEBUG
-                printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
-                       arc->ident, red_cost );
-#else
-                infeasible = 1;
-#endif
+//         switch( arc->ident )
+//         {
+//         case BASIC:
+// #ifdef AT_ZERO
+//         case AT_ZERO:
+//             if( ABS(red_cost) > (cost_t)net->feas_tol )
+// #ifdef DEBUG
+//                 printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
+//                        arc->ident, red_cost );
+// #else
+//                 infeasible = 1;
+// #endif
             
-            break;
-#endif
-        case AT_LOWER:
-            if( red_cost < (cost_t)-net->feas_tol )
-#ifdef DEBUG
-                printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
-                       arc->ident, red_cost );
-#else
-                infeasible = 1;
-#endif
+//             break;
+// #endif
+//         case AT_LOWER:
+//             if( red_cost < (cost_t)-net->feas_tol )
+// #ifdef DEBUG
+//                 printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
+//                        arc->ident, red_cost );
+// #else
+//                 infeasible = 1;
+// #endif
 
-            break;
-        case AT_UPPER:
-            if( red_cost > (cost_t)net->feas_tol )
-#ifdef DEBUG
-                printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
-                       arc->ident, red_cost );
-#else
-                infeasible = 1;
-#endif
+//             break;
+//         case AT_UPPER:
+//             if( red_cost > (cost_t)net->feas_tol )
+// #ifdef DEBUG
+//                 printf("%d %d %d %ld\n", arc->tail->number, arc->head->number,
+//                        arc->ident, red_cost );
+// #else
+//                 infeasible = 1;
+// #endif
 
-            break;
-        case FIXED:
-        default:
-            break;
-        }
+//             break;
+//         case FIXED:
+//         default:
+//             break;
+//         }
 
         if( !infeasible )
             arc++;

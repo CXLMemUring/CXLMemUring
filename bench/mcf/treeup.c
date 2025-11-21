@@ -67,12 +67,17 @@ void update_tree( cycle_ori, new_orientation, delta, new_flow,
     flow_t   flow_temp;       
 
 
-    /**/
-    if( (bea->tail == jplus && sigma < 0) ||
-        (bea->tail == iplus && sigma > 0) )
-        sigma = ABS(sigma);
-    else
-        sigma = -(ABS(sigma));
+    /**/ 
+    /* Branchless computation to avoid short-circuiting &&/|| and ?: */
+    {
+        int c1 = ((bea->tail == jplus) & (sigma < 0));
+        int c2 = ((bea->tail == iplus) & (sigma > 0));
+        int cond = (c1 | c2); /* 1 => keep +abs, 0 => use -abs */
+        unsigned long m = (unsigned long)0 - (unsigned long)(sigma < 0);
+        long abs_sigma = (long)(((unsigned long)sigma ^ m) - m);
+        long sign_val = ((long)cond << 1) - 1; /* -1 or +1 */
+        sigma = (cost_t)(abs_sigma * sign_val);
+    }
     
     father = iminus;
     father->potential += sigma;
@@ -169,5 +174,4 @@ void update_tree( cycle_ori, new_orientation, delta, new_flow,
     }
 
 }
-
 

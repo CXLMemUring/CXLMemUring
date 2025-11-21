@@ -25,6 +25,9 @@ std::unique_ptr<Pass> createConvertCiraToLLVMX86Pass();
 /// Create a pass to convert Cira operations to LLVM for ARM target.
 std::unique_ptr<Pass> createConvertCiraToLLVMARMPass();
 
+/// Create a pass to convert Cira operations to NVVM IR for Vortex RISC-V SIMT target.
+std::unique_ptr<Pass> createConvertCiraToLLVMVortexPass();
+
 /// Create a pass to convert Cira operations to LLVM for heterogeneous execution.
 std::unique_ptr<Pass> createConvertCiraToLLVMHeteroPass();
 

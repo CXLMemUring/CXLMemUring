@@ -7,6 +7,7 @@ add_mlir_dialect_library(MLIRRemoteMem
         FunctionUtils.cpp
         WorkloadAnalysis.cpp
         ReadFromProfile.cpp
+        OffloadProfile.cpp
         RemoteMemTypeLowerer.cpp
         OffloadOp.cpp
         CiraOps.cpp

@@ -99,8 +99,10 @@ void insert_new_arc( new, newpos, tail, head, cost, red_cost )
     new[newpos].flow      = (flow_t)red_cost; 
     
     pos = newpos+1;
-    while( pos-1 && red_cost > (cost_t)new[pos/2-1].flow )
+    while( red_cost > (cost_t)new[pos/2-1].flow )
     {
+        if (pos -1 >= 1 )
+            break;
         new[pos-1].tail     = new[pos/2-1].tail;
         new[pos-1].head     = new[pos/2-1].head;
         new[pos-1].cost     = new[pos/2-1].cost;
@@ -147,8 +149,10 @@ void replace_weaker_arc( net, new, tail, head, cost, red_cost )
                     
     pos = 1;
     cmp = (new[1].flow > new[2].flow) ? 2 : 3;
-    while( cmp <= net->max_residual_new_m && red_cost < new[cmp-1].flow )
+    while(  red_cost < new[cmp-1].flow )
     {
+        if (cmp <= net->max_residual_new_m )
+            break;
         new[pos-1].tail = new[cmp-1].tail;
         new[pos-1].head = new[cmp-1].head;
         new[pos-1].cost = new[cmp-1].cost;
@@ -224,8 +228,8 @@ long price_out_impl( net )
     
     if( net->n_trips <= MAX_NB_TRIPS_FOR_SMALL_NET )
     {
-      if( net->m + net->max_new_m > net->max_m 
-          &&
+      if( net->m + net->max_new_m > net->max_m )
+          if(
           (net->n_trips*net->n_trips)/2 + net->m > net->max_m
           )
       {
@@ -258,8 +262,10 @@ long price_out_impl( net )
     trips = net->n_trips;
 
     arcout = net->arcs;
-    for( i = 0; i < trips && arcout[1].ident == FIXED; i++, arcout += 3 );
-    first_of_sparse_list = (arc_t *)NULL;
+    for( i = 0; i < trips ; i++, arcout += 3 ){
+        if ( arcout[1].ident == FIXED)
+            break;
+    first_of_sparse_list = (arc_t *)NULL;}
     for( ; i < trips; i++, arcout += 3 )
     {
         if( arcout[1].ident != FIXED )

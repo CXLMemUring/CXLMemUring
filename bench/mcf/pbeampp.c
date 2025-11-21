@@ -36,8 +36,7 @@ int bea_is_dual_infeasible( arc, red_cost )
     cost_t red_cost;
 #endif
 {
-    return(    (red_cost < 0 && arc->ident == AT_LOWER)
-            || (red_cost > 0 && arc->ident == AT_UPPER) );
+    return(    (((red_cost < 0) & (arc->ident == AT_LOWER)) | ((red_cost > 0) & (arc->ident == AT_UPPER))) );
 }
 
 
@@ -101,7 +100,7 @@ void sort_basket( min, max )
 
     if( min < r )
         sort_basket( min, r );
-    if( l < max && l <= B )
+    if( (l < max) & (l <= B) )
         sort_basket( l, max ); 
 }
 
@@ -138,17 +137,16 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
     }
     else
     {
-        for( i = 2, next = 0; i <= B && i <= basket_size; i++ )
+        for( i = 2, next = 0; (i <= B) & (i <= basket_size); i++ )
         {
             arc = perm[i]->a;
             red_cost = arc->cost - arc->tail->potential + arc->head->potential;
-            if( (red_cost < 0 && arc->ident == AT_LOWER)
-                || (red_cost > 0 && arc->ident == AT_UPPER) )
+            if( (((red_cost < 0) & (arc->ident == AT_LOWER)) | ((red_cost > 0) & (arc->ident == AT_UPPER))) )
             {
                 next++;
                 perm[next]->a = arc;
                 perm[next]->cost = red_cost;
-                perm[next]->abs_cost = ABS(red_cost);
+                perm[next]->abs_cost = red_cost;
             }
                 }   
         basket_size = next;
@@ -189,7 +187,8 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
         if( (long)GROUP_POS_STATE == (long)NR_GROUP_STATE )
             GROUP_POS_STATE = 0;
 
-    } while( basket_size < B && (long)GROUP_POS_STATE != old_group_pos );
+    /* Avoid short-circuit; evaluate both sides explicitly */
+    } while ( ((basket_size < B) & ((long)GROUP_POS_STATE != old_group_pos)) );
 	
     if( basket_size == 0 )
     {
@@ -203,8 +202,6 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
     *red_cost_of_bea = perm[1]->cost;
     return( perm[1]->a );
 }
-
-
 
 
 

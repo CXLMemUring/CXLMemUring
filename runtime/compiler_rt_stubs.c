@@ -1,4 +1,4 @@
-/* Compiler runtime stubs for aarch64 cross-compilation */
+/* Compiler runtime stubs for riscv64 cross-compilation */
 
 /* Convert signed long to double */
 double __floatdidf(long long a) {
