@@ -1,0 +1,21 @@
+{
+  "profile_type": "vortex_rtlsim",
+  "target": "riscv_vortex",
+  "simulator": "rtlsim",
+  "timing": {
+    "wall_time_ns": 26454072375,
+    "kernel_cycles": 6652,
+    "kernel_latency_ns": 6652,
+    "h2d_latency_ns": 1000000,
+    "d2h_latency_ns": 500000,
+    "total_offload_ns": 1506652
+  },
+  "performance": {
+    "total_cycles": 141309,
+    "kernel_cycles": 6652
+  },
+  "bandwidth": {
+    "h2d_gbps": 10.0,
+    "d2h_gbps": 10.0
+  }
+}

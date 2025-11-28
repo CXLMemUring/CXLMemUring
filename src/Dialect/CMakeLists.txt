@@ -8,6 +8,7 @@ add_mlir_dialect_library(MLIRRemoteMem
         WorkloadAnalysis.cpp
         ReadFromProfile.cpp
         OffloadProfile.cpp
+        OffloadOverheadAnalysis.cpp
         RemoteMemTypeLowerer.cpp
         OffloadOp.cpp
         CiraOps.cpp
@@ -23,6 +24,9 @@ add_mlir_dialect_library(MLIRRemoteMem
         MLIRIR
         MLIRMemRefDialect
         MLIRInferTypeOpInterface
+        MLIRAnalysis
+        MLIRSCFDialect
+        MLIRArithDialect
 )
 
 add_subdirectory(Transforms)

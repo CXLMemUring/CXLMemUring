@@ -1,0 +1,8 @@
+{
+  "profile_type": "x86_baseline",
+  "target": "x86_64",
+  "timing": {
+    "total_execution_ns": 6842852,
+    "total_execution_ms": 6.84
+  }
+}

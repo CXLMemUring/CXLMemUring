@@ -27,6 +27,39 @@ Copyright (c) 2003-2005 Andreas Loebel.
 
 #include "pbeampp.h"
 
+#ifdef MCF_PROFILING
+#include "mcf_profiler.h"
+#endif
+
+#ifdef MCF_VORTEX_OFFLOAD
+#include "mcf_vortex_offload.h"
+
+// Staging buffers for SoA transformation (from liveness analysis)
+static int64_t *g_arc_costs = NULL;
+static int64_t *g_tail_pots = NULL;
+static int64_t *g_head_pots = NULL;
+static int32_t *g_arc_idents = NULL;
+static int g_offload_initialized = 0;
+static long g_num_arcs = 0;
+
+// Initialize offload buffers based on liveness analysis
+static void init_offload_buffers(long num_arcs) {
+    if (g_offload_initialized && g_num_arcs >= num_arcs) return;
+
+    if (g_arc_costs) free(g_arc_costs);
+    if (g_tail_pots) free(g_tail_pots);
+    if (g_head_pots) free(g_head_pots);
+    if (g_arc_idents) free(g_arc_idents);
+
+    g_arc_costs = (int64_t*)malloc(num_arcs * sizeof(int64_t));
+    g_tail_pots = (int64_t*)malloc(num_arcs * sizeof(int64_t));
+    g_head_pots = (int64_t*)malloc(num_arcs * sizeof(int64_t));
+    g_arc_idents = (int32_t*)malloc(num_arcs * sizeof(int32_t));
+    g_num_arcs = num_arcs;
+    g_offload_initialized = 1;
+}
+#endif
+
 
 #ifdef _PROTO_
 int bea_is_dual_infeasible( arc_t *arc, cost_t red_cost )
@@ -125,6 +158,11 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
     long i, next, old_group_pos;
     arc_t *arc;
     cost_t red_cost;
+    long arcs_priced = 0;
+
+#ifdef MCF_PROFILING
+    mcf_profile_primal_bea_mpp_start();
+#endif
 
     if( initialize )
     {
@@ -166,21 +204,12 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
     {
         /* price next group */
         arc = arcs + (long)GROUP_POS_STATE;
+
+        // CPU path (original code) - always use for correctness
         for( ; arc < stop_arcs; arc += (long)NR_GROUP_STATE )
         {
-            // if( arc->ident > BASIC )
-            // {
-            //     /* red_cost = bea_compute_red_cost( arc ); */
-            //     red_cost = arc->cost - arc->tail->potential + arc->head->potential;
-            //     if( bea_is_dual_infeasible( arc, red_cost ) )
-            //     {
-            //         basket_size++;
-            //         perm[basket_size]->a = arc;
-            //         perm[basket_size]->cost = red_cost;
-            //         perm[basket_size]->abs_cost = ABS(red_cost);
-            //     }
-            // }
             remote(arc, &basket_size, perm);
+            arcs_priced++;
         }
 
         GROUP_POS_STATE = (cost_t)((long)GROUP_POS_STATE + 1);
@@ -193,13 +222,19 @@ arc_t *primal_bea_mpp( m, arcs, stop_arcs, red_cost_of_bea )
     if( basket_size == 0 )
     {
         initialize = 1;
-        *red_cost_of_bea = 0; 
-        exit(-1);
+        *red_cost_of_bea = 0;
+#ifdef MCF_PROFILING
+        mcf_profile_primal_bea_mpp_end(arcs_priced);
+#endif
+        return (arc_t *)0;  // Return NULL to indicate optimality
     }
     
     sort_basket( 1, basket_size );
-    
+
     *red_cost_of_bea = perm[1]->cost;
+#ifdef MCF_PROFILING
+    mcf_profile_primal_bea_mpp_end(arcs_priced);
+#endif
     return( perm[1]->a );
 }
 

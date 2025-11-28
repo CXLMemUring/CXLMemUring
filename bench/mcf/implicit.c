@@ -22,6 +22,10 @@ Copyright (c) 2003-2005 Andreas Loebel.
 
 #include "implicit.h"
 
+#ifdef MCF_PROFILING
+#include "mcf_profiler.h"
+#endif
+
 
 
 #ifdef _PROTO_
@@ -206,6 +210,10 @@ long price_out_impl( net )
     long latest;
     long min_impl_duration = 15;
 
+#ifdef MCF_PROFILING
+    mcf_profile_price_out_impl_start();
+#endif
+
     register cost_t bigM = net->bigM;
     register cost_t head_potential;
     register cost_t arc_cost = 30;
@@ -350,6 +358,9 @@ long price_out_impl( net )
     printf( "total time price_out_impl(): %0.0f\n", wall_time );
 #endif
 
+#ifdef MCF_PROFILING
+    mcf_profile_price_out_impl_end(new_arcs);
+#endif
 
     return new_arcs;
 }   

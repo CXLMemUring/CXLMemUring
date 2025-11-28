@@ -1,13 +1,16 @@
 cmake_minimum_required(VERSION 3.10)
 project(CIRA)
 
-find_package(MLIR REQUIRED CONFIG)
 set(CMAKE_CXX_STANDARD 20)
-message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
-message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-set(Clang_DIR ${CLANG_DIR})
-message(STATUS "Searching for ClangConfig.cmake in: ${Clang_DIR}")
+
+# Find packages - LLVM first, then MLIR, then Clang
+find_package(LLVM REQUIRED CONFIG)
+find_package(MLIR REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
+
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
+message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)

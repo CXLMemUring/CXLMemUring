@@ -23,6 +23,10 @@ Copyright (c) 2003-2005 Andreas Loebel.
 #include "mcfutil.h"
 
 #include <sys/syscall.h>
+
+#ifdef MCF_PROFILING
+#include "mcf_profiler.h"
+#endif
     
 #if defined(SIMICS)
 #include <simics/magic-instruction.h>
@@ -71,7 +75,11 @@ long refresh_potential( network_t *net )
 long refresh_potential( net )
     network_t *net;
 #endif
-{    
+{
+#ifdef MCF_PROFILING
+    mcf_profile_refresh_potential_start();
+#endif
+
 #if defined(SIMICS)
     MAGIC(9001);
 #endif
@@ -130,6 +138,10 @@ long refresh_potential( net )
   asm volatile ("addiu $0,$0,3723");
 #endif
 
+#ifdef MCF_PROFILING
+    mcf_profile_refresh_potential_end();
+#endif
+
     return checksum;
 }
 
@@ -149,9 +161,14 @@ double flow_cost( net )
     arc_t *arc;
     node_t *node;
     void *stop;
-    
+
     long fleet = 0;
     cost_t operational_cost = 0;
+    long num_arcs = 0;
+
+#ifdef MCF_PROFILING
+    mcf_profile_flow_cost_start();
+#endif
     
 
     stop = (void *)net->stop_arcs;
@@ -170,6 +187,7 @@ double flow_cost( net )
     stop = (void *)net->stop_arcs;
     for( arc = net->arcs; arc != (arc_t *)stop; arc++ )
     {
+        num_arcs++;
         if( arc->flow )
         {
             /* Replace '&&' with bitwise '&' on booleanized values (no side-effects) */
@@ -186,7 +204,11 @@ double flow_cost( net )
         }
 
     }
-    
+
+#ifdef MCF_PROFILING
+    mcf_profile_flow_cost_end(num_arcs);
+#endif
+
     return (double)fleet * (double)net->bigM + (double)operational_cost;
 }
 

@@ -401,10 +401,11 @@ for src in "${SOURCES[@]}"; do
   esac
 
 
-  # Workaround: llama-arch.cpp triggers a CIR frontend crash due to extremely
-  # large nested initializer lists. Compile it natively for x86_64 and bypass
-  # the CIR/MLIR pipeline for this translation unit.
-  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && "${src}" == */llama-arch.cpp ]]; then
+  # Workaround: Some llama.cpp files trigger CIR frontend hangs or crashes.
+  # Compile them natively for x86_64 and bypass the CIR/MLIR pipeline.
+  # - llama-arch.cpp: extremely large nested initializer lists
+  # - llama-batch.cpp: complex template instantiations causing CIR hang
+  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-arch.cpp || "${src}" == */llama-batch.cpp ) ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -429,11 +430,13 @@ for src in "${SOURCES[@]}"; do
     direct_clean_path="${LLVM_DIR}/${stem}.clean.llvm.mlir"
     ensure_dir_writable "$(dirname "${direct_clean_path}")"
 
-    # Build pass list for direct CIR -> MLIR -> LLVM lowering. FlattenCFG can
-    # be brittle for some TUs (e.g., DataFrame, LLAMACPP). Use it only for MCF
-    # where we rely on aggressive CFG simplification to help later legalizers.
+    # Build pass list for direct CIR -> MLIR -> LLVM lowering. FlattenCFG is
+    # needed to convert unstructured control flow (early returns in loops) to
+    # structured control flow that SCF lowering can handle.
+    # - MCF: aggressive CFG simplification for legalizers
+    # - DATAFRAME: has early returns inside loops that SCF can't handle directly
     PASS_FLAGS=(--allow-unregistered-dialect)
-    if [[ "${BENCHMARK_ID}" == "MCF" ]]; then
+    if [[ "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "DATAFRAME" ]]; then
       PASS_FLAGS+=(--cir-flatten-cfg)
     fi
     PASS_FLAGS+=(--cir-goto-solver --cir-to-mlir --cir-mlir-to-llvm --reconcile-unrealized-casts)

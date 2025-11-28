@@ -26,3 +26,24 @@ double __adddf3(double a, double b) {
 double __subdf3(double a, double b) {
     return a - b;
 }
+
+/* Integer multiplication/division for soft-float */
+long long __muldi3(long long a, long long b) {
+    return a * b;
+}
+
+long long __divdi3(long long a, long long b) {
+    return a / b;
+}
+
+unsigned long long __udivdi3(unsigned long long a, unsigned long long b) {
+    return a / b;
+}
+
+long long __moddi3(long long a, long long b) {
+    return a % b;
+}
+
+unsigned long long __umoddi3(unsigned long long a, unsigned long long b) {
+    return a % b;
+}

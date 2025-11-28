@@ -1,0 +1,65 @@
+{
+  "profile_type": "compiler_offload_profile",
+  "version": "2.0",
+  "generated_by": "profile_feedback_compiler.py",
+  "offload_decisions": {
+    "pricing_kernel": {
+      "decision": "conditional_offload",
+      "min_elements": 100,
+      "can_hoist_h2d": true,
+      "can_sink_d2h": false,
+      "expected_speedup": 1028.69
+    },
+    "basket_update": {
+      "decision": "cpu_only",
+      "min_elements": 15000,
+      "can_hoist_h2d": false,
+      "can_sink_d2h": false,
+      "expected_speedup": 0.33
+    },
+    "sort_basket": {
+      "decision": "cpu_only",
+      "min_elements": 3800,
+      "can_hoist_h2d": false,
+      "can_sink_d2h": true,
+      "expected_speedup": 1.31
+    },
+    "price_out_impl": {
+      "decision": "gpu_always",
+      "min_elements": 300,
+      "can_hoist_h2d": true,
+      "can_sink_d2h": true,
+      "expected_speedup": 249.8
+    }
+  },
+  "timing_data": {
+    "pricing_kernel": {
+      "kernel_cycles": 6652,
+      "h2d_latency_ns": 1000000,
+      "d2h_latency_ns": 500000,
+      "h2d_bytes": 2848,
+      "d2h_bytes": 2816
+    },
+    "basket_update": {
+      "kernel_cycles": 500,
+      "h2d_latency_ns": 100000,
+      "d2h_latency_ns": 50000,
+      "h2d_bytes": 2816,
+      "d2h_bytes": 2816
+    },
+    "sort_basket": {
+      "kernel_cycles": 2000,
+      "h2d_latency_ns": 100000,
+      "d2h_latency_ns": 50000,
+      "h2d_bytes": 2824,
+      "d2h_bytes": 2808
+    },
+    "price_out_impl": {
+      "kernel_cycles": 50000,
+      "h2d_latency_ns": 100000,
+      "d2h_latency_ns": 50000,
+      "h2d_bytes": 272,
+      "d2h_bytes": 4096
+    }
+  }
+}

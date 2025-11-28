@@ -1,0 +1,13 @@
+Running /root/CXLMemUring/scripts/../build/kernels/mcf_pricing.bin...
+CONFIGS: num_threads=4, num_warps=4, num_cores=1, num_clusters=1, socket_size=1, local_mem_base=0xffff0000, num_barriers=2
+#0: >> MCF Pricing Kernel Test
+#0: >> coreid=0, warpid=0, threadid=0
+#0: >> Allocating 64 arcs
+#0: >> Initializing test data
+#0: >> Launching pricing kernel with 64 threads
+#0: >> Kernel complete
+#0: >> PERF: kernel_cycles=6652
+#0: >> Results: 21 candidates found out of 64 arcs
+#0: >> First 8 reduced costs: 80 89 98 107 116 125 134 143 
+#0: >> PERF: total_cycles=141309
+#0: >> MCF Pricing Kernel Test PASSED!

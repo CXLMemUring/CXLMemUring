@@ -191,6 +191,10 @@ echo "[4/5] Linking Vortex kernel ELF..."
 echo "[5/5] Generating Vortex binary (.vxbin)..."
 OBJCOPY="${VX_CP}" python3 "${VXBIN_SCRIPT}" "${TEMP_ELF}" "${OUTPUT}"
 
+# Also generate raw .bin for RTL simulator
+BIN_FILE="${OUTPUT%.vxbin}.bin"
+"${VX_CP}" -O binary "${TEMP_ELF}" "${BIN_FILE}"
+
 # Generate disassembly for debugging
 DUMP_FILE="${OUTPUT%.vxbin}.dump"
 "${VX_DP}" -D "${TEMP_ELF}" > "${DUMP_FILE}"
@@ -198,6 +202,7 @@ DUMP_FILE="${OUTPUT%.vxbin}.dump"
 echo ""
 echo "✅ Compilation successful!"
 echo "   Kernel binary: ${OUTPUT}"
+echo "   RTL binary:    ${BIN_FILE}"
 echo "   Disassembly:   ${DUMP_FILE}"
 echo ""
 echo "   Size: $(stat -c%s "${OUTPUT}") bytes"

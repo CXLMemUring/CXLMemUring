@@ -1,0 +1,46 @@
+# Makefile for building libcira_runtime for RISC-V 64-bit
+# Uses system cross-compiler riscv64-linux-gnu-g++
+
+CXX = riscv64-linux-gnu-g++
+AR = riscv64-linux-gnu-ar
+
+CXXFLAGS = -std=c++17 -O3 -fPIC -DNDEBUG
+INCLUDES = -I include
+
+SRC_DIR = src
+BUILD_DIR = ../build-riscv64-runtime
+
+SOURCES = $(SRC_DIR)/CiraRuntime.cpp
+OBJECTS = $(BUILD_DIR)/CiraRuntime.o
+
+SHARED_LIB = $(BUILD_DIR)/libcira_runtime.so
+STATIC_LIB = $(BUILD_DIR)/libcira_runtime.a
+
+.PHONY: all clean shared static
+
+all: shared static
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+shared: $(BUILD_DIR) $(SHARED_LIB)
+
+static: $(BUILD_DIR) $(STATIC_LIB)
+
+$(SHARED_LIB): $(SOURCES)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -shared -o $@ $< -lpthread
+
+$(OBJECTS): $(SOURCES)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(STATIC_LIB): $(OBJECTS)
+	$(AR) rcs $@ $<
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+info:
+	@echo "RISC-V 64-bit Runtime Build"
+	@echo "  Compiler: $(CXX)"
+	@echo "  Flags:    $(CXXFLAGS)"
+	@echo "  Output:   $(BUILD_DIR)"

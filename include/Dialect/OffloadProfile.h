@@ -8,6 +8,7 @@
 
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "Dialect/RemoteMem.h"
 
@@ -156,9 +157,7 @@ private:
 std::unique_ptr<Pass> createProfileGuidedOffloadPass();
 
 inline void registerProfileGuidedOffloadPass() {
-    PassManager::registerPass([]() -> std::unique_ptr<Pass> {
-        return createProfileGuidedOffloadPass();
-    });
+    PassRegistration<ProfileGuidedOffloadPass>();
 }
 
 //===----------------------------------------------------------------------===//

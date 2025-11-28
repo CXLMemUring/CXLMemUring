@@ -1,0 +1,253 @@
+{
+  "profile_type": "per_offload_point_profile",
+  "version": "2.0",
+  "source": "mcf_analysis",
+
+  "offload_points": [
+    {
+      "id": "pricing_kernel",
+      "function": "primal_bea_mpp",
+      "location": "pbeampp.c:178-194",
+      "description": "Main pricing loop - compute reduced costs for arc groups",
+      "loop_type": "for_strided",
+      "parallelism": "embarrassingly_parallel",
+
+      "liveness_analysis": {
+        "live_in": [
+          {"name": "arcs", "type": "arc_t*", "size_bytes": 8, "access": "read"},
+          {"name": "stop_arcs", "type": "arc_t*", "size_bytes": 8, "access": "read"},
+          {"name": "basket_size", "type": "long*", "size_bytes": 8, "access": "read_write"},
+          {"name": "perm", "type": "BASKET**", "size_bytes": 2808, "access": "read_write"},
+          {"name": "NR_GROUP_STATE", "type": "cost_t", "size_bytes": 8, "access": "read"},
+          {"name": "GROUP_POS_STATE", "type": "cost_t", "size_bytes": 8, "access": "read"}
+        ],
+        "live_out": [
+          {"name": "basket_size", "type": "long", "size_bytes": 8, "access": "write"},
+          {"name": "perm", "type": "BASKET**", "size_bytes": 2808, "access": "write"}
+        ],
+        "h2d_total_bytes": 2848,
+        "d2h_total_bytes": 2816
+      },
+
+      "dominator_analysis": {
+        "immediate_dominator": "do_while_loop:174",
+        "post_dominator": "GROUP_POS_STATE_increment:196",
+        "can_hoist_h2d": true,
+        "can_sink_d2h": false,
+        "optimal_h2d_placement": "before_do_while:174",
+        "optimal_d2h_placement": "after_for_loop:194",
+        "reason": "H2D can be hoisted since arcs/stop_arcs don't change in do-while; D2H needed per iteration for basket_size check"
+      },
+
+      "overhead_analysis": {
+        "kernel_cycles": 6652,
+        "kernel_cycles_per_element": 104,
+        "h2d_latency_ns": 100000,
+        "h2d_transfer_ns": 284,
+        "d2h_latency_ns": 50000,
+        "d2h_transfer_ns": 281,
+        "total_overhead_ns": 157217,
+        "expected_elements": 64,
+        "scaled_kernel_cycles": 6652
+      },
+
+      "heuristics": {
+        "speedup_at_64_elements": 1028.69,
+        "speedup_at_1000_elements": 10286.9,
+        "crossover_point_elements": 150,
+        "transfer_dominance_ratio": 0.958,
+        "decision": "conditional_offload",
+        "reason": "Transfer overhead dominates at 64 elements; beneficial at >150 elements"
+      }
+    },
+
+    {
+      "id": "basket_update",
+      "function": "primal_bea_mpp",
+      "location": "pbeampp.c:149-161",
+      "description": "Re-evaluate existing basket entries for dual infeasibility",
+      "loop_type": "for_sequential",
+      "parallelism": "embarrassingly_parallel",
+
+      "liveness_analysis": {
+        "live_in": [
+          {"name": "perm", "type": "BASKET**", "size_bytes": 2808, "access": "read_write"},
+          {"name": "basket_size", "type": "long", "size_bytes": 8, "access": "read"}
+        ],
+        "live_out": [
+          {"name": "perm", "type": "BASKET**", "size_bytes": 2808, "access": "write"},
+          {"name": "basket_size", "type": "long", "size_bytes": 8, "access": "write"}
+        ],
+        "h2d_total_bytes": 2816,
+        "d2h_total_bytes": 2816
+      },
+
+      "dominator_analysis": {
+        "immediate_dominator": "else_branch:147",
+        "post_dominator": "basket_size_assignment:161",
+        "can_hoist_h2d": false,
+        "can_sink_d2h": false,
+        "optimal_h2d_placement": "before_for:149",
+        "optimal_d2h_placement": "after_for:161",
+        "reason": "Loop bounds depend on runtime basket_size"
+      },
+
+      "overhead_analysis": {
+        "kernel_cycles": 500,
+        "kernel_cycles_per_element": 10,
+        "h2d_latency_ns": 100000,
+        "h2d_transfer_ns": 281,
+        "d2h_latency_ns": 50000,
+        "d2h_transfer_ns": 281,
+        "total_overhead_ns": 151062,
+        "expected_elements": 50,
+        "scaled_kernel_cycles": 500
+      },
+
+      "heuristics": {
+        "speedup_at_50_elements": 0.33,
+        "crossover_point_elements": 15000,
+        "transfer_dominance_ratio": 0.997,
+        "decision": "cpu_only",
+        "reason": "Too small (max 50 elements); transfer overhead prohibitive"
+      }
+    },
+
+    {
+      "id": "sort_basket",
+      "function": "sort_basket",
+      "location": "pbeampp.c:70-109",
+      "description": "QuickSort basket by absolute cost",
+      "loop_type": "recursive",
+      "parallelism": "tree_traversal",
+
+      "liveness_analysis": {
+        "live_in": [
+          {"name": "perm", "type": "BASKET**", "size_bytes": 2808, "access": "read_write"},
+          {"name": "min", "type": "long", "size_bytes": 8, "access": "read"},
+          {"name": "max", "type": "long", "size_bytes": 8, "access": "read"}
+        ],
+        "live_out": [
+          {"name": "perm", "type": "BASKET**", "size_bytes": 2808, "access": "write"}
+        ],
+        "h2d_total_bytes": 2824,
+        "d2h_total_bytes": 2808
+      },
+
+      "dominator_analysis": {
+        "immediate_dominator": "primal_bea_mpp:213",
+        "post_dominator": "return:219",
+        "can_hoist_h2d": false,
+        "can_sink_d2h": true,
+        "optimal_h2d_placement": "before_sort_basket:213",
+        "optimal_d2h_placement": "after_sort_basket:213",
+        "reason": "Recursive calls complicate offloading"
+      },
+
+      "overhead_analysis": {
+        "kernel_cycles": 2000,
+        "kernel_cycles_per_element": 40,
+        "h2d_latency_ns": 100000,
+        "h2d_transfer_ns": 282,
+        "d2h_latency_ns": 50000,
+        "d2h_transfer_ns": 280,
+        "total_overhead_ns": 152562,
+        "expected_elements": 50,
+        "scaled_kernel_cycles": 2000
+      },
+
+      "heuristics": {
+        "speedup_at_50_elements": 1.31,
+        "crossover_point_elements": 3800,
+        "transfer_dominance_ratio": 0.987,
+        "decision": "cpu_only",
+        "reason": "Recursive structure not suitable for GPU; low parallelism"
+      }
+    },
+
+    {
+      "id": "price_out_impl",
+      "function": "price_out_impl",
+      "location": "implicit.c:273-358",
+      "description": "Price out implicit arcs (generate new arcs)",
+      "loop_type": "for_nested",
+      "parallelism": "embarrassingly_parallel",
+
+      "liveness_analysis": {
+        "live_in": [
+          {"name": "net", "type": "network_t*", "size_bytes": 256, "access": "read"},
+          {"name": "arcout", "type": "long*", "size_bytes": 8, "access": "read"},
+          {"name": "trips", "type": "long", "size_bytes": 8, "access": "read"}
+        ],
+        "live_out": [
+          {"name": "new_arcs", "type": "arc_t*", "size_bytes": 4096, "access": "write"}
+        ],
+        "h2d_total_bytes": 272,
+        "d2h_total_bytes": 4096
+      },
+
+      "dominator_analysis": {
+        "immediate_dominator": "function_entry",
+        "post_dominator": "function_return",
+        "can_hoist_h2d": true,
+        "can_sink_d2h": true,
+        "optimal_h2d_placement": "function_entry",
+        "optimal_d2h_placement": "function_return",
+        "reason": "Clean function boundary; good for offloading"
+      },
+
+      "overhead_analysis": {
+        "kernel_cycles": 50000,
+        "kernel_cycles_per_element": 50,
+        "h2d_latency_ns": 100000,
+        "h2d_transfer_ns": 27,
+        "d2h_latency_ns": 50000,
+        "d2h_transfer_ns": 409,
+        "total_overhead_ns": 200436,
+        "expected_elements": 1000,
+        "scaled_kernel_cycles": 50000
+      },
+
+      "heuristics": {
+        "speedup_at_1000_elements": 249.8,
+        "crossover_point_elements": 300,
+        "transfer_dominance_ratio": 0.751,
+        "decision": "gpu_always",
+        "reason": "High element count; good parallelism; kernel dominates transfer"
+      }
+    }
+  ],
+
+  "global_analysis": {
+    "total_offload_points": 4,
+    "recommended_offloads": ["pricing_kernel", "price_out_impl"],
+    "cpu_only": ["basket_update", "sort_basket"],
+
+    "aggregate_h2d_bytes": 8760,
+    "aggregate_d2h_bytes": 12536,
+    "total_kernel_cycles": 59152,
+
+    "optimization_strategy": {
+      "h2d_coalescing": "Combine pricing_kernel and price_out_impl H2D transfers when called sequentially",
+      "d2h_deferral": "Defer D2H until basket is needed for sort",
+      "loop_fusion": "Fuse basket_update into pricing_kernel for better data locality"
+    }
+  },
+
+  "compiler_hints": {
+    "pricing_kernel": {
+      "offload_target": "vortex",
+      "min_elements": 150,
+      "prefetch_distance": 64,
+      "thread_coarsening": 4,
+      "vectorization": "enabled"
+    },
+    "price_out_impl": {
+      "offload_target": "vortex",
+      "min_elements": 300,
+      "prefetch_distance": 128,
+      "thread_coarsening": 8,
+      "vectorization": "enabled"
+    }
+  }
+}

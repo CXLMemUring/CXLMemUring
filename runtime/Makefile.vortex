@@ -1,0 +1,88 @@
+# Makefile for Vortex Offload Backend Integration
+# Builds the complete host-to-device offload pipeline
+
+# Directories
+VORTEX_ROOT = /root/CXLMemUring/vortex
+VORTEX_RUNTIME = $(VORTEX_ROOT)/runtime
+VORTEX_INCLUDE = $(VORTEX_ROOT)/runtime/include
+VORTEX_SIM = $(VORTEX_ROOT)/sim/rtlsim
+VORTEX_LIBS = $(VORTEX_RUNTIME)
+
+CIRA_ROOT = /root/CXLMemUring
+RUNTIME_DIR = $(CIRA_ROOT)/runtime
+TEST_DIR = $(RUNTIME_DIR)/test
+
+# Compiler flags
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -g -O2
+CXXFLAGS += -I$(VORTEX_INCLUDE)
+CXXFLAGS += -I$(VORTEX_ROOT)/hw
+CXXFLAGS += -I$(RUNTIME_DIR)
+
+# Linker flags
+LDFLAGS = -L$(VORTEX_LIBS)
+LDFLAGS += -lvortex -lvortex-rtlsim -lrtlsim
+LDFLAGS += -lpthread -ldl
+
+# RISC-V Compiler for kernels
+RISCV_PREFIX = riscv64-unknown-elf-
+RISCV_CC = $(RISCV_PREFIX)gcc
+RISCV_OBJCOPY = $(RISCV_PREFIX)objcopy
+RISCV_CFLAGS = -march=rv32imf -mabi=ilp32f -O2 -fno-builtin
+RISCV_CFLAGS += -ffunction-sections -fdata-sections
+RISCV_LDFLAGS = -nostdlib -nostartfiles -Wl,--gc-sections
+
+# Targets
+.PHONY: all clean test
+
+all: vortex_device.o vortex_offload_backend.o test_vortex_e2e
+
+# Build device interface
+vortex_device.o: $(RUNTIME_DIR)/vortex_device.cpp $(RUNTIME_DIR)/vortex_device.h
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+# Build offload backend
+vortex_offload_backend.o: $(RUNTIME_DIR)/vortex_offload_backend.cpp $(RUNTIME_DIR)/vortex_device.h
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+# Build end-to-end test
+test_vortex_e2e: $(TEST_DIR)/test_vortex_e2e.cpp vortex_device.o vortex_offload_backend.o
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Build RISC-V kernel (if RISC-V toolchain available)
+kernels: $(CIRA_ROOT)/test/kernels/vector_add.riscv
+
+$(CIRA_ROOT)/test/kernels/vector_add.riscv: $(CIRA_ROOT)/test/kernels/vector_add.c
+	@if command -v $(RISCV_CC) >/dev/null 2>&1; then \
+		$(RISCV_CC) $(RISCV_CFLAGS) -c -o $(CIRA_ROOT)/test/kernels/vector_add.o $<; \
+		$(RISCV_OBJCOPY) -O binary $(CIRA_ROOT)/test/kernels/vector_add.o $@; \
+		echo "Built RISC-V kernel: $@"; \
+	else \
+		echo "RISC-V toolchain not found, skipping kernel build"; \
+	fi
+
+# Run tests
+test: test_vortex_e2e
+	@echo "Running Vortex end-to-end tests..."
+	@export LD_LIBRARY_PATH=$(VORTEX_LIBS):$$LD_LIBRARY_PATH && \
+		./test_vortex_e2e
+
+# Clean
+clean:
+	rm -f *.o test_vortex_e2e
+	rm -f $(CIRA_ROOT)/test/kernels/*.o $(CIRA_ROOT)/test/kernels/*.riscv
+
+# Help
+help:
+	@echo "Vortex Offload Backend Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all      - Build all components"
+	@echo "  test     - Build and run tests"
+	@echo "  kernels  - Build RISC-V kernels (requires RISC-V toolchain)"
+	@echo "  clean    - Remove build artifacts"
+	@echo ""
+	@echo "Environment:"
+	@echo "  VORTEX_ROOT    = $(VORTEX_ROOT)"
+	@echo "  VORTEX_RUNTIME = $(VORTEX_RUNTIME)"
+	@echo "  VORTEX_SIM     = $(VORTEX_SIM)"

@@ -4,17 +4,17 @@
   "functions": {
     "primal_bea_mpp": {
       "calls": 123823,
-      "total_ns": 875650685,
-      "avg_ns": 7071.79,
+      "total_ns": 862302751,
+      "avg_ns": 6963.99,
       "arcs_processed": 42030718,
-      "throughput_arcs_per_sec": 47999412.00,
+      "throughput_arcs_per_sec": 48742414.37,
       "offload_candidate": true,
       "parallelism": "embarrassingly_parallel"
     },
     "price_out_impl": {
       "calls": 1,
-      "total_ns": 855675,
-      "avg_ns": 855675.00,
+      "total_ns": 795405,
+      "avg_ns": 795405.00,
       "arcs_generated": 0,
       "throughput_arcs_per_sec": 0.00,
       "offload_candidate": true,
@@ -31,15 +31,15 @@
     },
     "refresh_potential": {
       "calls": 621,
-      "total_ns": 950106480,
+      "total_ns": 941621374,
       "offload_candidate": false,
       "parallelism": "tree_traversal"
     }
   },
   "overall": {
     "simplex_iterations": 0,
-    "total_execution_ns": 2212440312,
-    "total_execution_ms": 2212.44
+    "total_execution_ns": 2186302826,
+    "total_execution_ms": 2186.30
   },
   "offload_hints": {
     "primary_target": "primal_bea_mpp",

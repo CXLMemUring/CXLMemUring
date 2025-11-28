@@ -49,9 +49,9 @@ LogicalResult mlir::cira::loadOffloadProfile(StringRef filename,
     }
 
     // Parse profile type and target
-    if (auto *type = profileData->getString("profile_type"))
+    if (auto type = profileData->getString("profile_type"))
         profile.profile_type = type->str();
-    if (auto *target = profileData->getString("target"))
+    if (auto target = profileData->getString("target"))
         profile.target = target->str();
 
     // Parse function profiles
@@ -75,7 +75,7 @@ LogicalResult mlir::cira::loadOffloadProfile(StringRef filename,
                     funcProfile.throughput = *throughput;
                 if (auto candidate = funcObj->getBoolean("offload_candidate"))
                     funcProfile.offload_candidate = *candidate;
-                if (auto *parallelism = funcObj->getString("parallelism"))
+                if (auto parallelism = funcObj->getString("parallelism"))
                     funcProfile.parallelism_type = parallelism->str();
             }
 
@@ -93,9 +93,9 @@ LogicalResult mlir::cira::loadOffloadProfile(StringRef filename,
 
     // Parse offload hints
     if (auto *hints = profileData->getObject("offload_hints")) {
-        if (auto *primary = hints->getString("primary_target"))
+        if (auto primary = hints->getString("primary_target"))
             profile.primary_offload_target = primary->str();
-        if (auto *secondary = hints->getString("secondary_target"))
+        if (auto secondary = hints->getString("secondary_target"))
             profile.secondary_offload_target = secondary->str();
         if (auto speedup = hints->getNumber("expected_speedup_pricing"))
             profile.expected_speedup = *speedup;

@@ -1,0 +1,28 @@
+{
+  "profile_type": "experiment_results",
+  "version": "1.0",
+  "x86_baseline": {
+    "total_execution_ns": 6842852,
+    "total_execution_ms": 6.84
+  },
+  "vortex_execution": {
+    "kernel_cycles": 6652,
+    "kernel_latency_ns": 6652,
+    "kernel_latency_ms": 0.006652,
+    "h2d_latency_ns": 1000000,
+    "d2h_latency_ns": 500000,
+    "total_offload_ns": 1506652,
+    "total_offload_ms": 1.50
+  },
+  "analysis": {
+    "kernel_speedup": 1028.69,
+    "total_speedup_with_overhead": 4.54,
+    "offload_beneficial": true,
+    "note": "64 arcs is too small for offload benefit; need >1000 arcs"
+  },
+  "offload_hints": {
+    "primary_target": "primal_bea_mpp",
+    "min_arcs_for_offload": 1000,
+    "expected_kernel_speedup": 1028.69
+  }
+}
