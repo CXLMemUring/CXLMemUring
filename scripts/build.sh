@@ -32,7 +32,12 @@ if [[ -z "${MLIR_TRANSLATE_BIN:-}" ]]; then
   fi
 fi
 if [[ -z "${LLC_BIN:-}" ]]; then
-  if [[ -x "${LOCAL_LLC_BIN}" ]]; then
+  # Prefer system LLC over clangir LLC due to codegen bugs in clangir's version.
+  # The LLVM IR attribute syntax is fixed by sed post-processing above.
+  # Use explicit /usr/bin/llc since PATH may have clangir first.
+  if [[ -x "/usr/bin/llc" ]]; then
+    LLC_BIN="/usr/bin/llc"
+  elif [[ -x "${LOCAL_LLC_BIN}" ]]; then
     LLC_BIN="${LOCAL_LLC_BIN}"
   else
     LLC_BIN="$(command -v llc || true)"
@@ -161,6 +166,7 @@ case "${BENCHMARK_KEY}" in
   gapbs)
     BENCHMARK_ID="GAPBS"
     SOURCE_DIRS=("${REPO_ROOT}/bench/gapbs/src")
+    BENCHMARK_EXTRA_LDFLAGS=(-lstdc++ -lpthread -lm)
     WORK_ROOT="${WORK_BASE_DIR}/gapbs_pipeline"
     BIN_ROOT="${BIN_BASE_DIR}/gapbs"
     BIN_NAME="gapbs"
@@ -195,6 +201,7 @@ case "${BENCHMARK_KEY}" in
       "/ggml/src/ggml-zdnn/"
       "/ggml/src/ggml-vulkan/"
       "/src/llama-adapter.cpp"
+      "/src/llama-batch.cpp"    # System clang crash in ValueHandleBase::AddToUseList (X86 DAG)
     )
     EXTRA_SOURCES=("${REPO_ROOT}/bench/llama.cpp/examples/simple/simple.cpp")
     BENCHMARK_EXTRA_INCLUDES=(
@@ -239,20 +246,40 @@ case "${BENCHMARK_KEY}" in
       "/tools/merovingian/"
       "/tools/monetdbe/"
       "/ctest/"
+      "/rapi/"
+      "/pyapi3/"
+      "/batxml.c"
+      "/xml.c"
+      "/fits/"                  # Missing fitsio.h external library
+      "/netcdf/"                # Missing netcdf.h external library
+      "/shp/"                   # Missing gdal.h external library
     )
     EXTRA_SOURCES=("${REPO_ROOT}/bench/MonetDB/tools/mserver/mserver5.c")
     BENCHMARK_EXTRA_INCLUDES=(
+      "${REPO_ROOT}/bench/MonetDB/build/common/utils/"
+      "${REPO_ROOT}/bench/MonetDB/build"
+      "${REPO_ROOT}/bench/MonetDB/common/stream/"
+      "${REPO_ROOT}/bench/MonetDB/common/options/"
+      "${REPO_ROOT}/bench/MonetDB/common/utils/"
+      "${REPO_ROOT}/bench/MonetDB"
       "${REPO_ROOT}/bench/MonetDB/common"
       "${REPO_ROOT}/bench/MonetDB/gdk"
       "${REPO_ROOT}/bench/MonetDB/monetdb5"
+      "${REPO_ROOT}/bench/MonetDB/monetdb5/mal"
+      "${REPO_ROOT}/bench/MonetDB/monetdb5/optimizer"
+      "${REPO_ROOT}/bench/MonetDB/monetdb5/scheduler"
+      "${REPO_ROOT}/bench/MonetDB/monetdb5/modules/atoms"
+      "${REPO_ROOT}/bench/MonetDB/monetdb5/modules/kernel"
+      "${REPO_ROOT}/bench/MonetDB/monetdb5/modules/mal"
       "${REPO_ROOT}/bench/MonetDB/sql/include"
       "${REPO_ROOT}/bench/MonetDB/sql/common"
       "${REPO_ROOT}/bench/MonetDB/sql/server"
       "${REPO_ROOT}/bench/MonetDB/sql/storage"
       "${REPO_ROOT}/bench/MonetDB/sql/backends/monet5"
       "${REPO_ROOT}/bench/MonetDB/tools/mserver"
+      "${REPO_ROOT}/bench/MonetDB/clients/mapilib"
     )
-    BENCHMARK_EXTRA_CFLAGS+=(-D_GNU_SOURCE)
+    BENCHMARK_EXTRA_CFLAGS+=(-D_GNU_SOURCE -DLIBMAL -DLIBMONETDB5 -DLIBOPTIMIZER -DLIBGDK -DLIBSTREAM -DLIBSQL -DLIBMAPI)
     BENCHMARK_EXTRA_LDFLAGS=(-lpthread -ldl -lm)
     WORK_ROOT="${WORK_BASE_DIR}/monetdb_pipeline"
     BIN_ROOT="${BIN_BASE_DIR}/monetdb"
@@ -328,7 +355,7 @@ for dir in "${CIR_DIR}" "${MLIR_DIR}" "${CIRA_DIR}" "${LLVM_DIR}" "${OBJ_DIR}"; 
   ensure_dir_writable "${dir}"
 done
 
-COMMON_FLAGS=(-O3)
+COMMON_FLAGS=(-O3 -I/root/CXLMemUring/bench/MonetDB/common/utils/ -I/root/CXLMemUring/bench/MonetDB/build)
 
 CFLAGS=(-std=c11)
 CFLAGS+=("${BENCHMARK_EXTRA_CFLAGS[@]}")
@@ -360,7 +387,7 @@ done
 append_includes_from_env PIPELINE_EXTRA_INCLUDES
 append_includes_from_env "${BENCHMARK_ID}_EXTRA_INCLUDES"
 
-LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -lcira_runtime)
+LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -L/usr/local/lib -Wl,--allow-multiple-definition -lcira_runtime)
 LINK_FLAGS+=("${BENCHMARK_EXTRA_LDFLAGS[@]}")
 append_flags_from_env PIPELINE_EXTRA_LDFLAGS LINK_FLAGS
 append_flags_from_env "${BENCHMARK_ID}_EXTRA_LDFLAGS" LINK_FLAGS
@@ -401,6 +428,39 @@ for src in "${SOURCES[@]}"; do
   esac
 
 
+  # Workaround: GAPBS cxx_runtime_support.cpp provides vtables and STL symbols
+  # that the CIR pipeline doesn't emit correctly. Must be compiled natively.
+  if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == */cxx_runtime_support.cpp ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native compilation - C++ runtime support for vtables/STL)"
+    NATIVE_CXX="/usr/bin/clang++"
+    [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
+    # Use standard C++ flags with RTTI and exceptions enabled for proper vtable emission
+    "${NATIVE_CXX}" -c -std=c++17 -fno-strict-aliasing \
+      "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O3 -o "${obj}"
+    continue
+  fi
+
+  # Workaround: GAPBS .cc files have C++ exception handling that generates cf.br
+  # operations that the CIR pipeline can't legalize. Compile them natively.
+  if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == *.cc ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native compilation - C++ exception handling bypass)"
+    NATIVE_CXX="/usr/bin/clang++"
+    [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
+    "${NATIVE_CXX}" -c -std=c++17 -fno-strict-aliasing \
+      "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O3 -o "${obj}"
+    continue
+  fi
+
   # Workaround: Some llama.cpp files trigger CIR frontend hangs or crashes.
   # Compile them natively for x86_64 and bypass the CIR/MLIR pipeline.
   # - llama-arch.cpp: extremely large nested initializer lists
@@ -422,10 +482,130 @@ for src in "${SOURCES[@]}"; do
     continue
   fi
 
+  # Workaround: Some MonetDB files cause issues in the CIR/MLIR pipeline:
+  # - gdk_aggr.c: stack overflow in MLIR printer (2000+ nested if-else chains)
+  # - switch statement files: scf.yield legalization issues
+  # Compile these natively using system clang (not clangir which has bugs).
+  # Files that need native compilation - patterns support glob matching
+  MONETDB_NATIVE_PATTERNS=(
+    # GDK files have many issues with switch statements, deep nesting, etc.
+    "gdk_*.c"                 # Most gdk files have conversion issues
+    # Stream files have switch statement issues
+    "bs.c"                    # switch -> scf.yield legalization
+    "gz_stream.c"             # switch -> scf.yield legalization
+    "mapi_stream.c"           # switch -> scf.yield legalization
+    "pump.c"                  # switch -> scf.yield legalization
+    "rw.c"                    # switch -> scf.yield legalization
+    "stream.c"                # switch -> scf.yield legalization
+    "text_stream.c"           # switch -> scf.yield legalization
+    "socket_stream.c"         # switch -> scf.yield legalization
+    "lz4_stream.c"            # switch -> scf.yield legalization
+    "xz_stream.c"             # switch -> scf.yield legalization
+    "msabaoth.c"              # switch -> scf.yield legalization
+    # MonetDB5 optimizer files - mlir-translate crashes on these
+    "opt_*.c"                 # mlir-translate crash during LLVM IR generation
+    "optimizer.c"             # CIR parsing error (type mismatch in const_array)
+    # MAL (MonetDB Assembly Language) files have switch statements
+    "mal_*.c"                 # switch -> scf.yield legalization
+    "mal.c"                   # CIR parsing error (type mismatch)
+    # Atoms modules have mel_atom struct init issues (type mismatch in const_array)
+    "blob.c"
+    "color.c"
+    "identifier.c"
+    "inet.c"
+    "json.c"
+    "mtime.c"
+    "str.c"
+    "streams.c"
+    "strptime.c"
+    "url.c"
+    "uuid.c"
+    # Kernel modules - MonetDB kernel files have mel_func struct init issues (type mismatch in const_array)
+    # These files use compound literal initializers that cause clangir CIR parsing errors
+    # Add specific patterns for files in monetdb5/modules/kernel/
+    "aggr.c"                  # CIR parsing error (type mismatch in const_array)
+    "alarm.c"                 # CIR parsing error (type mismatch in const_array)
+    "algebra.c"               # CIR parsing error (type mismatch in const_array)
+    "bat5.c"                  # CIR parsing error (type mismatch in const_array)
+    "batcolor.c"              # CIR parsing error (type mismatch in const_array)
+    "batmmath.c"              # CIR parsing error (type mismatch in const_array)
+    "batstr.c"                # CIR parsing error (type mismatch in const_array)
+    "group.c"                 # CIR parsing error (type mismatch in const_array)
+    "microbenchmark.c"        # CIR parsing error (type mismatch in const_array)
+    "mmath.c"                 # CIR parsing error (type mismatch in const_array)
+    # MAL modules - monetdb5/modules/mal/ files with the same mel_func init issues
+    "batcalc.c"               # CIR parsing error (type mismatch in const_array)
+    "batExtensions.c"         # CIR parsing error (type mismatch in const_array)
+    "batMask.c"               # CIR parsing error (type mismatch in const_array)
+    "bbp.c"                   # CIR parsing error (type mismatch in const_array)
+    "calc.c"                  # CIR parsing error (type mismatch in const_array)
+    "clients.c"               # CIR parsing error (type mismatch in const_array)
+    "groupby.c"               # CIR parsing error (type mismatch in const_array)
+    "inspect.c"               # CIR parsing error (type mismatch in const_array)
+    "iterator.c"              # CIR parsing error (type mismatch in const_array)
+    "language.c"              # CIR parsing error (type mismatch in const_array)
+    "mal_io.c"                # CIR parsing error (type mismatch in const_array)
+    "mal_mapi.c"              # CIR parsing error (type mismatch in const_array)
+    "manifold.c"              # CIR parsing error (type mismatch in const_array)
+    "manual.c"                # CIR parsing error (type mismatch in const_array)
+    "mat.c"                   # CIR parsing error (type mismatch in const_array)
+    "mdb.c"                   # CIR parsing error (type mismatch in const_array)
+    "mkey.c"                  # CIR parsing error (type mismatch in const_array)
+    "orderidx.c"              # CIR parsing error (type mismatch in const_array)
+    "pcre.c"                  # CIR parsing error (type mismatch in const_array)
+    "profiler.c"              # CIR parsing error (type mismatch in const_array)
+    "projectionpath.c"        # CIR parsing error (type mismatch in const_array)
+    "querylog.c"              # CIR parsing error (type mismatch in const_array)
+    "remote.c"                # CIR parsing error (type mismatch in const_array)
+    "sample.c"                # CIR parsing error (type mismatch in const_array)
+    "sysmon.c"                # CIR parsing error (type mismatch in const_array)
+    "tablet.c"                # CIR parsing error (type mismatch in const_array)
+    "tracer.c"                # CIR parsing error (type mismatch in const_array)
+    "txtsim.c"                # CIR parsing error (type mismatch in const_array)
+    # SQL backend files with switch statements or type mismatch
+    "dict.c"                  # switch -> scf.yield legalization (sql/backends/monet5)
+    "for.c"                   # switch -> scf.yield legalization (sql/backends/monet5)
+    "generator.c"             # CIR parsing error (type mismatch in const_array)
+    "rel_bin.c"               # scf.yield legalization (sql/backends/monet5)
+    # SQL backend monet5 files with mlir-translate crashes
+    "sql_*.c"                 # mlir-translate crash (INVALIDBLOCK references in various files)
+    "sql.c"                   # CIR parsing error (type mismatch in const_record)
+    "capi.c"                  # cir-opt crash (UnrealizedConversionCastOp print)
+    "udf.c"                   # scf.yield legalization failure
+    "csv.c"                   # cir.const legalization for 2D arrays
+    "fits.c"                  # Missing fitsio.h library
+  )
+  needs_native=false
+  if [[ "${BENCHMARK_ID}" == "MONETDB" ]]; then
+    for pattern in "${MONETDB_NATIVE_PATTERNS[@]}"; do
+      # Support glob patterns in the match
+      basename_src="$(basename "${src}")"
+      if [[ "${basename_src}" == ${pattern} ]]; then
+        needs_native=true
+        break
+      fi
+    done
+  fi
+  if [[ "${needs_native}" == "true" ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native compilation - known CIR/MLIR conversion issue)"
+    # Use system clang for native fallback (clangir's clang has bugs)
+    # Prefer /usr/bin/clang over PATH since PATH may have clangir first
+    NATIVE_CC="/usr/bin/clang"
+    [[ ! -x "${NATIVE_CC}" ]] && NATIVE_CC="$(command -v gcc || echo "${LINKER_BIN}")"
+    "${NATIVE_CC}" -c -fno-strict-aliasing \
+      "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O3 -o "${obj}"
+    continue
+  fi
+
   "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}"
   "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
 
-  if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" ]]; then
+  if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "MONETDB" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
     # Direct CIR -> MLIR -> LLVM dialect lowering and export
     direct_clean_path="${LLVM_DIR}/${stem}.clean.llvm.mlir"
     ensure_dir_writable "$(dirname "${direct_clean_path}")"
@@ -436,7 +616,7 @@ for src in "${SOURCES[@]}"; do
     # - MCF: aggressive CFG simplification for legalizers
     # - DATAFRAME: has early returns inside loops that SCF can't handle directly
     PASS_FLAGS=(--allow-unregistered-dialect)
-    if [[ "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "DATAFRAME" ]]; then
+    if [[ "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
       PASS_FLAGS+=(--cir-flatten-cfg)
     fi
     PASS_FLAGS+=(--cir-goto-solver --cir-to-mlir --cir-mlir-to-llvm --reconcile-unrealized-casts)
@@ -449,7 +629,16 @@ for src in "${SOURCES[@]}"; do
     rm -f "${llvm_mlir_path}.tmp"
 
     "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir \
-      "${llvm_mlir_path}" -o "${llvm_path}"
+      "${llvm_mlir_path}" -o "${llvm_path}.raw"
+    # Fix LLVM 22 syntax for compatibility with older LLC versions (v18)
+    # - captures(none) -> nocapture
+    # - getelementptr inbounds nuw -> getelementptr inbounds (remove nuw)
+    sed -e 's/captures(none)/nocapture/g' \
+        -e 's/writeonly captures(none)/writeonly nocapture/g' \
+        -e 's/readonly captures(none)/readonly nocapture/g' \
+        -e 's/getelementptr inbounds nuw/getelementptr inbounds/g' \
+        "${llvm_path}.raw" > "${llvm_path}"
+    rm -f "${llvm_path}.raw"
   else
     # Heterogeneous path via CIRA as before
     "${CIRA_BIN}" -allow-unregistered-dialect "${mlir_path}" \
@@ -497,7 +686,16 @@ for src in "${SOURCES[@]}"; do
     python3 "${REPO_ROOT}/scripts/remove_leftover_scf.py" "${llvm_mlir_path}.tmp" "${llvm_mlir_path}"
     rm -f "${llvm_mlir_path}.dirty" "${llvm_mlir_path}.tmp"
 
-    "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir "${llvm_mlir_path}" -o "${llvm_path}"
+    "${MLIR_TRANSLATE_BIN}" --allow-unregistered-dialect --mlir-to-llvmir "${llvm_mlir_path}" -o "${llvm_path}.raw"
+    # Fix LLVM 22 syntax for compatibility with older LLC versions (v18)
+    # - captures(none) -> nocapture
+    # - getelementptr inbounds nuw -> getelementptr inbounds (remove nuw)
+    sed -e 's/captures(none)/nocapture/g' \
+        -e 's/writeonly captures(none)/writeonly nocapture/g' \
+        -e 's/readonly captures(none)/readonly nocapture/g' \
+        -e 's/getelementptr inbounds nuw/getelementptr inbounds/g' \
+        "${llvm_path}.raw" > "${llvm_path}"
+    rm -f "${llvm_path}.raw"
   fi
 
 
@@ -515,7 +713,7 @@ for arch in "${ARCHES[@]}"; do
     ensure_dir_writable "$(dirname "${obj}")"
     # Work around an LLVM CodeGenPrepare crash on some degenerate CFGs by
     # disabling CGP entirely for llc on these IR files.
-    "${LLC_BIN}" -filetype=obj -relocation-model=pic -disable-cgp -mtriple="${arch}" "${ll}" -o "${obj}"
+    "${LLC_BIN}" -O0 -filetype=obj -relocation-model=pic -disable-cgp -mtriple="${arch}" "${ll}" -o "${obj}"
   done
 done
 

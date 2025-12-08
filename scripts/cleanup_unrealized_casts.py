@@ -52,7 +52,9 @@ def strip_module_attrs(lines: list[str]) -> list[str]:
 
 def cleanup(lines: list[str]) -> list[str]:
     lines = strip_module_attrs(lines)
-    replacements: dict[tuple[str | None, str], str] = {}
+    # Store (func_name, old_var) -> (new_var, definition_line_idx)
+    # We only replace uses AFTER the definition line
+    replacements: dict[tuple[str | None, str], tuple[str, int]] = {}
     to_remove: set[int] = set()
     current_func: str | None = None
 
@@ -90,7 +92,9 @@ def cleanup(lines: list[str]) -> list[str]:
             if alloca_var is None:
                 continue
 
-            replacements[(current_func, ptr_var)] = alloca_var
+            # Store replacement with the line index where the cast is defined
+            # Only replace uses AFTER this line
+            replacements[(current_func, ptr_var)] = (alloca_var, idx)
             to_remove.add(idx)          # remove memref->ptr cast line
             to_remove.add(struct_idx)   # remove struct->memref cast line
             continue
@@ -99,7 +103,7 @@ def cleanup(lines: list[str]) -> list[str]:
         m_index = CAST_INDEX_RE.match(line)
         if m_index:
             idx_var, src_var = m_index.groups()
-            replacements[(current_func, idx_var)] = src_var
+            replacements[(current_func, idx_var)] = (src_var, idx)
             to_remove.add(idx)
 
         # Handle dead struct->memref casts (these can't be translated to LLVM IR)
@@ -120,7 +124,7 @@ def cleanup(lines: list[str]) -> list[str]:
             if not used:
                 to_remove.add(idx)
 
-    # pass 2: emit lines applying replacements (function-scoped)
+    # pass 2: emit lines applying replacements (function-scoped, only after definition)
     output: list[str] = []
     current_func = None
     for idx, line in enumerate(lines):
@@ -131,8 +135,9 @@ def cleanup(lines: list[str]) -> list[str]:
             current_func = m_func.group(1)
 
         new_line = line
-        for (func_name, old_var), new_var in replacements.items():
-            if func_name == current_func and old_var in new_line:
+        for (func_name, old_var), (new_var, def_line_idx) in replacements.items():
+            # Only replace in the same function AND only on lines AFTER the definition
+            if func_name == current_func and old_var in new_line and idx > def_line_idx:
                 # Avoid rewriting the defining line of new_var itself
                 if re.match(r"\s*" + re.escape(old_var) + r"\s*=", new_line):
                     continue
