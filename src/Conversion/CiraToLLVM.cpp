@@ -383,15 +383,390 @@ struct CallOpLowering : public ConversionPattern {
 };
 
 //===----------------------------------------------------------------------===//
+// New CIRA Operation Lowerings (Memory, Cache, Sync, Control, Stream)
+//===----------------------------------------------------------------------===//
+
+/// Lower cira.alloc_cxl to LLVM malloc with CXL NUMA hint
+struct AllocCxlOpLowering : public ConversionPattern {
+  AllocCxlOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, AllocCxlOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto allocOp = cast<AllocCxlOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    // Call numa_alloc_onnode or mmap with CXL memory binding
+    // For now, lower to standard malloc - real impl would use numa_alloc
+    auto mallocFunc = FlatSymbolRefAttr::get(ctx, "malloc");
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+
+    auto result = rewriter.create<LLVM::CallOp>(
+        loc, ptrType, mallocFunc, operands[0]);
+
+    rewriter.replaceOp(op, result.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.load_async to non-blocking load + prefetch hint
+struct LoadAsyncOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  LoadAsyncOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, LoadAsyncOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loadOp = cast<LoadAsyncOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto *converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the element type
+    Type resultType = converter->convertType(loadOp.getType());
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+
+    // Issue prefetch for the address
+    emitPrefetchForTarget(rewriter, loc, operands[0], targetArch);
+
+    // Create the load (will complete when data arrives)
+    auto loadResult = rewriter.create<LLVM::LoadOp>(loc, resultType, operands[0]);
+
+    // For now, the "future" is just the loaded value
+    // Real implementation would use io_uring or similar async mechanism
+    rewriter.replaceOp(op, loadResult.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.store_async to non-blocking store
+struct StoreAsyncOpLowering : public ConversionPattern {
+  StoreAsyncOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, StoreAsyncOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+
+    // Create non-temporal store for CXL memory
+    rewriter.create<LLVM::StoreOp>(loc, operands[0], operands[1],
+                                    /*alignment=*/0, /*isVolatile=*/false,
+                                    /*isNonTemporal=*/true);
+
+    // Return a "completed" future (null for now)
+    auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto nullPtr = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+    rewriter.replaceOp(op, nullPtr.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.flush to memory fence
+struct FlushOpLowering : public ConversionPattern {
+  FlushOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, FlushOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+
+    // Issue memory fence
+    rewriter.create<LLVM::FenceOp>(loc, LLVM::AtomicOrdering::seq_cst);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.prefetch_stream to prefetch intrinsics
+struct PrefetchStreamOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  PrefetchStreamOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, PrefetchStreamOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto prefetchOp = cast<PrefetchStreamOp>(op);
+    Location loc = op->getLoc();
+
+    // Issue multiple prefetch hints for the stream
+    // For simplicity, prefetch the first few cache lines
+    emitPrefetchForTarget(rewriter, loc, operands[0], targetArch);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.prefetch_indirect to pointer-chasing prefetch
+struct PrefetchIndirectOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  PrefetchIndirectOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, PrefetchIndirectOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto prefetchOp = cast<PrefetchIndirectOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    // For Vortex target, generate microkernel for pointer chasing
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      // Generate NVVM-style kernel call for Vortex
+      auto launchFunc = FlatSymbolRefAttr::get(ctx, "__vortex_prefetch_chain");
+      auto i64Type = IntegerType::get(ctx, 64);
+
+      auto offset = rewriter.create<LLVM::ConstantOp>(
+          loc, i64Type, prefetchOp.getNextPtrOffsetAttr());
+      auto depth = rewriter.create<LLVM::ConstantOp>(
+          loc, i64Type, prefetchOp.getDepthAttr());
+
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, launchFunc,
+                                     ValueRange{operands[0], offset, depth});
+    } else {
+      // For x86/ARM, just prefetch the first node
+      emitPrefetchForTarget(rewriter, loc, operands[0], targetArch);
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.future_await - for now just pass through the value
+struct FutureAwaitOpLowering : public ConversionPattern {
+  FutureAwaitOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, FutureAwaitOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    // Future is already the value (simplified implementation)
+    rewriter.replaceOp(op, operands[0]);
+    return success();
+  }
+};
+
+/// Lower cira.barrier to memory fence
+struct BarrierOpLowering : public ConversionPattern {
+  BarrierOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, BarrierOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    rewriter.create<LLVM::FenceOp>(loc, LLVM::AtomicOrdering::seq_cst);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.release to free
+struct ReleaseOpLowering : public ConversionPattern {
+  ReleaseOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, ReleaseOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    auto freeFunc = FlatSymbolRefAttr::get(ctx, "free");
+    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, freeFunc, operands[0]);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.stream_create_indirect - create stream state structure
+struct StreamCreateIndirectOpLowering : public ConversionPattern {
+  StreamCreateIndirectOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, StreamCreateIndirectOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    // For now, the stream is just the starting pointer
+    // Real impl would allocate a stream descriptor struct
+    rewriter.replaceOp(op, operands[0]);
+    return success();
+  }
+};
+
+/// Lower cira.prefetch_chain - generate Vortex microkernel
+struct PrefetchChainOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  PrefetchChainOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, PrefetchChainOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto chainOp = cast<PrefetchChainOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      // Generate NVVM kernel call
+      auto launchFunc = FlatSymbolRefAttr::get(ctx, "__vortex_prefetch_chain_kernel");
+      auto i64Type = IntegerType::get(ctx, 64);
+      auto depth = rewriter.create<LLVM::ConstantOp>(
+          loc, i64Type, chainOp.getDepthAttr());
+
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, launchFunc,
+                                     ValueRange{operands[0], depth});
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.peek_stream - return current element
+struct PeekStreamOpLowering : public ConversionPattern {
+  PeekStreamOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, PeekStreamOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto peekOp = cast<PeekStreamOp>(op);
+    Location loc = op->getLoc();
+    auto *converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    Type resultType = converter->convertType(peekOp.getType());
+
+    // Load from current stream position
+    auto loadResult = rewriter.create<LLVM::LoadOp>(loc, resultType, operands[0]);
+    rewriter.replaceOp(op, loadResult.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.advance_stream - update stream pointer
+struct AdvanceStreamOpLowering : public ConversionPattern {
+  AdvanceStreamOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, AdvanceStreamOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    // Stream advancement is handled by the transformed loop structure
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.offload_start - emit Vortex kernel launch
+struct OffloadStartOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  OffloadStartOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, OffloadStartOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto offloadOp = cast<OffloadStartOp>(op);
+    Location loc = op->getLoc();
+
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      // Emit kernel launch for Vortex
+      // The body operations will be lowered separately
+    }
+
+    // Inline the body operations
+    Block &body = offloadOp.getBody().front();
+    for (auto &bodyOp : llvm::make_early_inc_range(body.getOperations())) {
+      rewriter.clone(bodyOp);
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.offload region - emit kernel or inline
+struct OffloadRegionOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  OffloadRegionOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, OffloadRegionOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto offloadOp = cast<OffloadRegionOp>(op);
+    Location loc = op->getLoc();
+
+    // For Vortex, the region becomes a kernel
+    // For x86, inline the operations
+
+    // Inline the body operations
+    Block &body = offloadOp.getBody().front();
+    SmallVector<Value> results;
+
+    for (auto &bodyOp : llvm::make_early_inc_range(body.getOperations())) {
+      if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
+        // Collect yield values as results
+        for (auto val : yieldOp.getValues()) {
+          results.push_back(val);
+        }
+      } else {
+        rewriter.clone(bodyOp);
+      }
+    }
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Helper function for populating conversion patterns
 //===----------------------------------------------------------------------===//
 
 static void populateCiraToLLVMConversionPatternsImpl(
     LLVMTypeConverter &converter, RewritePatternSet &patterns,
     TargetArchitecture arch) {
+  // Legacy patterns
   patterns.add<LoadEdgeOpLowering, EvictEdgeOpLowering>(converter, arch);
   patterns.add<LoadNodeOpLowering, GetPaddrOpLowering, CallOpLowering>(converter);
-  // Trivial lowering for generic cira.offload (no results): erase the op.
+
+  // New CIRA operation patterns
+  patterns.add<AllocCxlOpLowering>(converter);
+  patterns.add<LoadAsyncOpLowering>(converter, arch);
+  patterns.add<StoreAsyncOpLowering>(converter);
+  patterns.add<FlushOpLowering>(converter);
+  patterns.add<PrefetchStreamOpLowering>(converter, arch);
+  patterns.add<PrefetchIndirectOpLowering>(converter, arch);
+  patterns.add<FutureAwaitOpLowering>(converter);
+  patterns.add<BarrierOpLowering>(converter);
+  patterns.add<ReleaseOpLowering>(converter);
+
+  // Stream operation patterns
+  patterns.add<StreamCreateIndirectOpLowering>(converter);
+  patterns.add<PrefetchChainOpLowering>(converter, arch);
+  patterns.add<PeekStreamOpLowering>(converter);
+  patterns.add<AdvanceStreamOpLowering>(converter);
+
+  // Control operation patterns
+  patterns.add<OffloadStartOpLowering>(converter, arch);
+  patterns.add<OffloadRegionOpLowering>(converter, arch);
+
+  // Legacy generic offload (renamed to offload_legacy)
   struct GenericOffloadOpLowering : public ConversionPattern {
     GenericOffloadOpLowering(LLVMTypeConverter &converter)
         : ConversionPattern(converter, OffloadOp::getOperationName(), 1,

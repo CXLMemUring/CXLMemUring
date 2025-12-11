@@ -3,6 +3,20 @@
 // This file implements the conversion from ClangIR dialect to Cira dialect
 // for offloading C/C++ operations to remote memory systems.
 //
+// Key transformation (from paper Listing 1):
+//   Original:                          Transformed CIRA IR:
+//   while (node) {                     %stream = cira.stream_create_indirect
+//     val = node->data;                          %start_node, offset=8
+//     node = node->next;               cira.offload_start @vortex_core_0 {
+//   }                                    cira.prefetch_chain %stream, depth=16
+//                                      }
+//                                      %loop:
+//                                        %future = cira.peek_stream %stream
+//                                        %data = cira.future_await %future
+//                                        // Computation on %data...
+//                                        cira.advance_stream %stream
+//                                        br %loop
+//
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/CIRToCira.h"
@@ -12,6 +26,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
@@ -24,6 +39,144 @@ using namespace mlir;
 using namespace mlir::cira;
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// Cost Model for Offload Decision
+//===----------------------------------------------------------------------===//
+
+/// Cost model parameters (from paper equation)
+struct OffloadCostModel {
+  // Latency parameters (in nanoseconds)
+  static constexpr double L_CXL = 165.0;    // CXL memory latency
+  static constexpr double L_LLC = 15.0;     // LLC hit latency
+  static constexpr double C_sync = 50.0;    // Sync cost via ring buffer
+
+  // Minimum dependency chain depth to benefit from offloading
+  static constexpr int MIN_CHAIN_DEPTH = 4;
+
+  /// Compute the gain from offloading
+  /// Gain = sum(L_CXL - L_LLC) - (C_sync + C_vortex_busy)
+  static double computeGain(int64_t chainDepth, double vortexBusyCycles) {
+    double latencySaving = chainDepth * (L_CXL - L_LLC);
+    double overhead = C_sync + vortexBusyCycles;
+    return latencySaving - overhead;
+  }
+
+  /// Check if offloading is beneficial
+  static bool shouldOffload(int64_t chainDepth, double vortexBusyCycles = 0.0) {
+    return computeGain(chainDepth, vortexBusyCycles) > 0 &&
+           chainDepth >= MIN_CHAIN_DEPTH;
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Pointer Chasing Analysis
+//===----------------------------------------------------------------------===//
+
+/// Analyzes a loop to detect pointer-chasing patterns (linked list traversal)
+struct PointerChasingAnalysis {
+  // The pointer value being chased
+  Value ptrValue;
+
+  // The "next" field offset in bytes (e.g., offsetof(node, next))
+  int64_t nextPtrOffset = 8;  // Default: assume 8-byte offset
+
+  // The "data" field offset
+  int64_t dataOffset = 0;
+
+  // Estimated chain depth (for prefetching)
+  int64_t estimatedDepth = 16;
+
+  // Whether the pattern was successfully detected
+  bool detected = false;
+
+  // The load operation that loads the next pointer
+  Operation *nextPtrLoad = nullptr;
+
+  // The load operation that loads data
+  Operation *dataLoad = nullptr;
+};
+
+/// Detect pointer chasing pattern in a while loop
+PointerChasingAnalysis detectPointerChasing(scf::WhileOp whileOp) {
+  PointerChasingAnalysis result;
+
+  // The while loop should have exactly one iter_arg (the pointer)
+  if (whileOp.getInits().size() != 1)
+    return result;
+
+  result.ptrValue = whileOp.getInits()[0];
+
+  // Analyze the "before" region (condition check)
+  // Look for: ptr != null
+  Block &beforeBlock = whileOp.getBefore().front();
+
+  // Analyze the "after" region (loop body)
+  // Look for:
+  //   data = load ptr+dataOffset   (data access)
+  //   ptr = load ptr+nextOffset    (pointer update)
+  Block &afterBlock = whileOp.getAfter().front();
+
+  bool foundNextLoad = false;
+  bool foundDataLoad = false;
+
+  afterBlock.walk([&](Operation *op) {
+    if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
+      // Heuristic: if the loaded value is yielded, it's the next pointer
+      // If it's used for computation, it's data
+      for (auto *user : loadOp.getResult().getUsers()) {
+        if (isa<scf::YieldOp>(user)) {
+          result.nextPtrLoad = op;
+          foundNextLoad = true;
+        } else {
+          result.dataLoad = op;
+          foundDataLoad = true;
+        }
+      }
+    }
+  });
+
+  // Also check for CIR-level loads
+  afterBlock.walk([&](Operation *op) {
+    if (op->getName().getStringRef().contains("cir.load")) {
+      // Check if this is loading the next pointer
+      foundNextLoad = true;
+      result.nextPtrLoad = op;
+    }
+  });
+
+  result.detected = foundNextLoad;
+  return result;
+}
+
+/// Detect pointer chasing in CIR while loop
+PointerChasingAnalysis detectPointerChasingCIR(cir::WhileOp whileOp) {
+  PointerChasingAnalysis result;
+
+  // Analyze the condition block for null check
+  // Analyze the body for pointer chasing pattern
+
+  bool hasPointerLoad = false;
+  bool hasPointerUpdate = false;
+
+  whileOp.walk([&](Operation *op) {
+    // Look for CIR load operations
+    if (op->getName().getStringRef().contains("cir.load") ||
+        op->getName().getStringRef().contains("cir.get_member")) {
+      hasPointerLoad = true;
+      if (!result.nextPtrLoad)
+        result.nextPtrLoad = op;
+    }
+    // Look for struct member access (node->next pattern)
+    if (op->getName().getStringRef().contains("cir.ptr_stride") ||
+        op->getName().getStringRef().contains("cir.member")) {
+      hasPointerUpdate = true;
+    }
+  });
+
+  result.detected = hasPointerLoad && hasPointerUpdate;
+  return result;
+}
 
 //===----------------------------------------------------------------------===//
 // ClangIR For Loop to Cira Offload Pattern
@@ -48,10 +201,15 @@ struct CIRForLoopToCiraPattern : public OpRewritePattern<scf::ForOp> {
       return failure(); // Only offload large loops
     }
 
-    // Create offload operation for the loop
-    auto offloadOp = rewriter.create<OffloadOp>(
+    // Check cost model
+    if (!OffloadCostModel::shouldOffload(*tripCount)) {
+      return failure();
+    }
+
+    // Create offload region operation for the loop
+    auto offloadOp = rewriter.create<OffloadRegionOp>(
         loc, TypeRange{}, // No results for now
-        rewriter.getStringAttr("graph_traversal"),
+        SymbolRefAttr(),  // target (optional)
         forOp.getInitArgs()
     );
 
@@ -74,12 +232,6 @@ struct CIRForLoopToCiraPattern : public OpRewritePattern<scf::ForOp> {
 private:
   /// Check if a for loop exhibits graph processing patterns
   bool isGraphProcessingLoop(scf::ForOp forOp) const {
-    // Look for patterns like:
-    // for (i = 0; i < n; i++) {
-    //   process_edges(graph[i]);
-    //   access_neighbors(graph[i]);
-    // }
-
     bool hasIndirectAccess = false;
     bool hasLargeMemoryFootprint = false;
 
@@ -100,7 +252,6 @@ private:
 
   /// Estimate the trip count of a loop
   std::optional<int64_t> estimateTripCount(scf::ForOp forOp) const {
-    // Simple heuristic: check if bounds are constants
     auto lowerBound = forOp.getLowerBound().getDefiningOp<arith::ConstantOp>();
     auto upperBound = forOp.getUpperBound().getDefiningOp<arith::ConstantOp>();
     auto step = forOp.getStep().getDefiningOp<arith::ConstantOp>();
@@ -120,12 +271,149 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
-// ClangIR While Loop to Cira Pattern (Pointer Chasing)
+// ClangIR While Loop to Cira Pattern (Pointer Chasing) - Paper Listing 1
 //===----------------------------------------------------------------------===//
 
-/// Convert pointer-chasing while loops to Cira offload operations
+/// Convert pointer-chasing while loops to Cira stream operations
+/// This implements the transformation from Listing 1 in the paper:
+///
+/// Original:                          Transformed:
+/// while (node) {                     %stream = cira.stream_create_indirect
+///   val = node->data;                          %start_node, offset=8
+///   node = node->next;               cira.offload_start @vortex_core_0 {
+/// }                                    cira.prefetch_chain %stream, depth=16
+///                                    }
+///                                    scf.while ... {
+///                                      %future = cira.peek_stream %stream
+///                                      %data = cira.future_await %future
+///                                      // Computation on %data...
+///                                      cira.advance_stream %stream
+///                                    }
+struct CIRWhileLoopToCiraStreamPattern : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern<scf::WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = whileOp.getLoc();
+
+    // Detect pointer-chasing pattern
+    auto analysis = detectPointerChasing(whileOp);
+    if (!analysis.detected) {
+      return failure();
+    }
+
+    // Check cost model - pointer chasing typically has high benefit
+    if (!OffloadCostModel::shouldOffload(analysis.estimatedDepth)) {
+      return failure();
+    }
+
+    MLIRContext *ctx = rewriter.getContext();
+
+    // Get the element type from the pointer
+    Type elementType = rewriter.getI64Type(); // Default to i64
+    if (analysis.ptrValue.getType().isa<MemRefType>()) {
+      elementType = analysis.ptrValue.getType().cast<MemRefType>().getElementType();
+    }
+
+    // Create stream type for the linked list traversal
+    auto streamType = StreamType::get(elementType, 0, analysis.nextPtrOffset);
+    auto futureType = FutureType::get(elementType);
+    auto handleType = HandleType::get(elementType);
+
+    // Step 1: Create stream descriptor for indirect access pattern
+    // %stream = cira.stream_create_indirect %start_node, offset=8 : !cira.stream
+    auto streamCreateOp = rewriter.create<StreamCreateIndirectOp>(
+        loc, streamType,
+        analysis.ptrValue,  // start_ptr (will need cast)
+        rewriter.getI64IntegerAttr(analysis.nextPtrOffset)
+    );
+
+    // Step 2: Create offload region for Vortex to prefetch the chain
+    // cira.offload_start @vortex_core_0 {
+    //   cira.prefetch_chain %stream, depth=16
+    // }
+    auto offloadStartOp = rewriter.create<OffloadStartOp>(
+        loc, SymbolRefAttr::get(ctx, "vortex_core_0")
+    );
+
+    Block *offloadBody = rewriter.createBlock(&offloadStartOp.getBody());
+    rewriter.setInsertionPointToStart(offloadBody);
+
+    // Create prefetch_chain inside the offload region
+    rewriter.create<PrefetchChainOp>(
+        loc, streamCreateOp.getResult(),
+        rewriter.getI64IntegerAttr(analysis.estimatedDepth)
+    );
+
+    // Step 3: Transform the while loop to use stream operations
+    rewriter.setInsertionPointAfter(offloadStartOp);
+
+    // Create a new while loop that uses the stream
+    auto newWhileOp = rewriter.create<scf::WhileOp>(
+        loc, whileOp.getResultTypes(), whileOp.getInits()
+    );
+
+    // Clone the "before" region (condition check)
+    rewriter.cloneRegionBefore(whileOp.getBefore(), newWhileOp.getBefore(),
+                               newWhileOp.getBefore().end());
+
+    // Build transformed "after" region
+    Block *afterBlock = rewriter.createBlock(&newWhileOp.getAfter(),
+                                              newWhileOp.getAfter().end());
+
+    // Add block arguments matching the original
+    for (auto arg : whileOp.getAfter().front().getArguments()) {
+      afterBlock->addArgument(arg.getType(), loc);
+    }
+
+    rewriter.setInsertionPointToStart(afterBlock);
+
+    // %future = cira.peek_stream %stream : !cira.stream -> !cira.future
+    auto peekOp = rewriter.create<PeekStreamOp>(
+        loc, futureType, streamCreateOp.getResult()
+    );
+
+    // %data = cira.future_await %future : !cira.future -> element_type
+    auto awaitOp = rewriter.create<FutureAwaitOp>(
+        loc, elementType, peekOp.getResult()
+    );
+
+    // Clone the original computation, replacing pointer loads with awaited data
+    IRMapping mapping;
+    mapping.map(whileOp.getAfter().front().getArguments(),
+                afterBlock->getArguments());
+
+    // Map the data load to the awaited value
+    if (analysis.dataLoad) {
+      mapping.map(analysis.dataLoad->getResult(0), awaitOp.getResult());
+    }
+
+    for (auto &op : whileOp.getAfter().front().getOperations()) {
+      // Skip the original load operations - they're replaced by stream ops
+      if (&op == analysis.dataLoad || &op == analysis.nextPtrLoad)
+        continue;
+
+      if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
+        // Before yielding, advance the stream
+        rewriter.create<AdvanceStreamOp>(loc, streamCreateOp.getResult());
+        rewriter.clone(op, mapping);
+      } else {
+        rewriter.clone(op, mapping);
+      }
+    }
+
+    rewriter.replaceOp(whileOp, newWhileOp.getResults());
+    return success();
+  }
+};
+
+/// Simpler pattern for while loops that just wraps in offload region
 struct CIRWhileLoopToCiraPattern : public OpRewritePattern<scf::WhileOp> {
   using OpRewritePattern<scf::WhileOp>::OpRewritePattern;
+
+  // Lower benefit than stream pattern
+  CIRWhileLoopToCiraPattern(MLIRContext *ctx)
+      : OpRewritePattern<scf::WhileOp>(ctx, /*benefit=*/1) {}
 
   LogicalResult matchAndRewrite(scf::WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
@@ -136,10 +424,10 @@ struct CIRWhileLoopToCiraPattern : public OpRewritePattern<scf::WhileOp> {
       return failure();
     }
 
-    // Create offload operation for pointer chasing
-    auto offloadOp = rewriter.create<OffloadOp>(
+    // Create offload region operation for pointer chasing
+    auto offloadOp = rewriter.create<OffloadRegionOp>(
         loc, whileOp.getResultTypes(),
-        rewriter.getStringAttr("pointer_chase"),
+        SymbolRefAttr(),
         whileOp.getInits()
     );
 
@@ -147,11 +435,16 @@ struct CIRWhileLoopToCiraPattern : public OpRewritePattern<scf::WhileOp> {
     Block *offloadBody = rewriter.createBlock(&offloadOp.getBody());
     rewriter.setInsertionPointToStart(offloadBody);
 
-    // Placeholder for optimized pointer chasing implementation
-    // Would include:
-    // - Prefetching next pointers
-    // - Batching pointer accesses
-    // - Remote memory streaming
+    // Clone the while loop inside the offload region
+    IRMapping mapping;
+    auto clonedWhile = rewriter.clone(*whileOp.getOperation(), mapping);
+
+    // Add yield at end of offload body
+    SmallVector<Value> yieldValues;
+    for (auto result : clonedWhile->getResults()) {
+      yieldValues.push_back(result);
+    }
+    rewriter.create<YieldOp>(loc, yieldValues);
 
     rewriter.replaceOp(whileOp, offloadOp.getResults());
     return success();
@@ -160,16 +453,9 @@ struct CIRWhileLoopToCiraPattern : public OpRewritePattern<scf::WhileOp> {
 private:
   /// Check if a while loop is doing pointer chasing
   bool isPointerChasingLoop(scf::WhileOp whileOp) const {
-    // Look for patterns like:
-    // while (ptr != null) {
-    //   process(ptr->data);
-    //   ptr = ptr->next;
-    // }
-
     bool hasPointerLoad = false;
     bool hasPointerUpdate = false;
 
-    // Check the before region for pointer comparison
     if (!whileOp.getBefore().empty()) {
       whileOp.getBefore().walk([&](Operation *op) {
         if (isa<memref::LoadOp>(op)) {
@@ -178,7 +464,6 @@ private:
       });
     }
 
-    // Check the after region for pointer updates
     if (!whileOp.getAfter().empty()) {
       whileOp.getAfter().walk([&](Operation *op) {
         if (isa<memref::LoadOp, memref::StoreOp>(op)) {
@@ -192,32 +477,161 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
-// Direct CIR -> Cira fallback patterns (when SCF lowering isn't available)
+// Direct CIR -> Cira patterns (for CIR loops)
 //===----------------------------------------------------------------------===//
-struct CIRForLoopOpToCiraFallback : public OpRewritePattern<cir::ForOp> {
+
+/// Transform CIR for loops with graph patterns
+struct CIRForLoopOpToCiraPattern : public OpRewritePattern<cir::ForOp> {
   using OpRewritePattern<cir::ForOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(cir::ForOp forOp,
                                 PatternRewriter &rewriter) const override {
-    auto off = rewriter.create<OffloadOp>(
-        forOp.getLoc(), TypeRange{}, rewriter.getStringAttr("graph_traversal"),
-        ValueRange{});
-    (void)rewriter.createBlock(&off.getBody());
-    rewriter.replaceOp(forOp, off.getResults());
+    Location loc = forOp.getLoc();
+
+    // Analyze for graph processing patterns
+    bool hasIndirectAccess = false;
+    forOp.walk([&](Operation *op) {
+      if (op->getName().getStringRef().contains("cir.load") ||
+          op->getName().getStringRef().contains("cir.get_member")) {
+        hasIndirectAccess = true;
+      }
+    });
+
+    if (!hasIndirectAccess) {
+      return failure();
+    }
+
+    // Create offload region
+    auto offloadOp = rewriter.create<OffloadRegionOp>(
+        loc, TypeRange{},
+        SymbolRefAttr(),
+        ValueRange{}
+    );
+
+    Block *offloadBody = rewriter.createBlock(&offloadOp.getBody());
+    rewriter.setInsertionPointToStart(offloadBody);
+
+    // Clone the for loop inside offload region
+    IRMapping mapping;
+    rewriter.clone(*forOp.getOperation(), mapping);
+
+    rewriter.replaceOp(forOp, offloadOp.getResults());
     return success();
   }
 };
 
-struct CIRWhileOpToCiraFallback : public OpRewritePattern<cir::WhileOp> {
+/// Transform CIR while loops with pointer chasing to CIRA stream operations
+struct CIRWhileOpToCiraStreamPattern : public OpRewritePattern<cir::WhileOp> {
   using OpRewritePattern<cir::WhileOp>::OpRewritePattern;
+
+  // Higher benefit to prefer this over simple offload
+  CIRWhileOpToCiraStreamPattern(MLIRContext *ctx)
+      : OpRewritePattern<cir::WhileOp>(ctx, /*benefit=*/2) {}
 
   LogicalResult matchAndRewrite(cir::WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
-    auto off = rewriter.create<OffloadOp>(
-        whileOp.getLoc(), TypeRange{},
-        rewriter.getStringAttr("pointer_chase"), ValueRange{});
-    (void)rewriter.createBlock(&off.getBody());
-    rewriter.replaceOp(whileOp, off.getResults());
+    Location loc = whileOp.getLoc();
+
+    // Detect pointer chasing pattern
+    auto analysis = detectPointerChasingCIR(whileOp);
+    if (!analysis.detected) {
+      return failure();
+    }
+
+    // Check cost model
+    if (!OffloadCostModel::shouldOffload(analysis.estimatedDepth)) {
+      return failure();
+    }
+
+    MLIRContext *ctx = rewriter.getContext();
+    Type elementType = rewriter.getI64Type();
+
+    // Create stream type
+    auto streamType = StreamType::get(elementType, 0, analysis.nextPtrOffset);
+    auto futureType = FutureType::get(elementType);
+
+    // Get start pointer from while loop operands/context
+    Value startPtr;
+    // Try to find the pointer being iterated
+    whileOp.walk([&](Operation *op) {
+      for (auto operand : op->getOperands()) {
+        if (operand.getType().isa<LLVM::LLVMPointerType>() ||
+            operand.getType().isa<MemRefType>()) {
+          startPtr = operand;
+          return WalkResult::interrupt();
+        }
+      }
+      return WalkResult::advance();
+    });
+
+    if (!startPtr) {
+      return failure();
+    }
+
+    // Create handle type and wrap start pointer
+    auto handleType = HandleType::get(elementType);
+
+    // Step 1: Create stream for indirect access
+    auto streamOp = rewriter.create<StreamCreateIndirectOp>(
+        loc, streamType, startPtr,
+        rewriter.getI64IntegerAttr(analysis.nextPtrOffset)
+    );
+
+    // Step 2: Offload prefetching to Vortex
+    auto offloadStart = rewriter.create<OffloadStartOp>(
+        loc, SymbolRefAttr::get(ctx, "vortex_core_0")
+    );
+
+    Block *offloadBody = rewriter.createBlock(&offloadStart.getBody());
+    rewriter.setInsertionPointToStart(offloadBody);
+    rewriter.create<PrefetchChainOp>(
+        loc, streamOp.getResult(),
+        rewriter.getI64IntegerAttr(analysis.estimatedDepth)
+    );
+
+    // Step 3: Create the transformed loop structure
+    rewriter.setInsertionPointAfter(offloadStart);
+
+    // Create offload region containing the loop
+    auto offloadRegion = rewriter.create<OffloadRegionOp>(
+        loc, TypeRange{}, SymbolRefAttr(), ValueRange{}
+    );
+
+    Block *regionBody = rewriter.createBlock(&offloadRegion.getBody());
+    rewriter.setInsertionPointToStart(regionBody);
+
+    // Clone the while loop with stream-based access
+    IRMapping mapping;
+    rewriter.clone(*whileOp.getOperation(), mapping);
+
+    rewriter.eraseOp(whileOp);
+    return success();
+  }
+};
+
+/// Simple fallback pattern for CIR while loops
+struct CIRWhileOpToCiraFallback : public OpRewritePattern<cir::WhileOp> {
+  using OpRewritePattern<cir::WhileOp>::OpRewritePattern;
+
+  CIRWhileOpToCiraFallback(MLIRContext *ctx)
+      : OpRewritePattern<cir::WhileOp>(ctx, /*benefit=*/1) {}
+
+  LogicalResult matchAndRewrite(cir::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = whileOp.getLoc();
+
+    // Create simple offload region
+    auto offloadOp = rewriter.create<OffloadRegionOp>(
+        loc, TypeRange{}, SymbolRefAttr(), ValueRange{}
+    );
+
+    Block *offloadBody = rewriter.createBlock(&offloadOp.getBody());
+    rewriter.setInsertionPointToStart(offloadBody);
+
+    IRMapping mapping;
+    rewriter.clone(*whileOp.getOperation(), mapping);
+
+    rewriter.replaceOp(whileOp, offloadOp.getResults());
     return success();
   }
 };
@@ -280,9 +694,15 @@ struct CIRToCiraPass : public PassWrapper<CIRToCiraPass, OperationPass<ModuleOp>
 //===----------------------------------------------------------------------===//
 
 void mlir::cira::populateCIRToCiraPatterns(MLIRContext *ctx, RewritePatternSet &patterns) {
-  patterns.add<CIRForLoopToCiraPattern, CIRWhileLoopToCiraPattern>(ctx);
-  // Also register CIR fallback patterns to make progress on raw CIR inputs.
-  patterns.add<CIRForLoopOpToCiraFallback, CIRWhileOpToCiraFallback>(ctx);
+  // SCF-level patterns (higher priority stream patterns first)
+  patterns.add<CIRWhileLoopToCiraStreamPattern>(ctx);  // Benefit=2 (stream-based)
+  patterns.add<CIRForLoopToCiraPattern>(ctx);
+  patterns.add<CIRWhileLoopToCiraPattern>(ctx);        // Benefit=1 (simple offload)
+
+  // Direct CIR patterns (for when input is raw CIR before SCF lowering)
+  patterns.add<CIRWhileOpToCiraStreamPattern>(ctx);    // Benefit=2 (stream-based)
+  patterns.add<CIRForLoopOpToCiraPattern>(ctx);
+  patterns.add<CIRWhileOpToCiraFallback>(ctx);         // Benefit=1 (fallback)
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> mlir::cira::createCIRToCiraPass() {
