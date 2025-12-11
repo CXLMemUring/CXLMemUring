@@ -34,6 +34,9 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Source files for the runtime library
 set(RUNTIME_SOURCES
     src/CiraRuntime.cpp
+    vortex_verilator_sim.cpp
+    vortex_device.cpp
+    vortex_offload_backend.cpp
 )
 
 # Create shared library

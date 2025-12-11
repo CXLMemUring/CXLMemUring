@@ -14,6 +14,23 @@
 #include <stdbool.h>
 #include <pthread.h>
 
+// Vortex SDK paths (update as needed)
+#ifndef VORTEX_HOME
+#define VORTEX_HOME "/home/victoryang00/vortex"
+#endif
+
+#ifndef VORTEX_BUILD_PATH
+#define VORTEX_BUILD_PATH VORTEX_HOME "/build"
+#endif
+
+// Libraries available for simulation
+// - librtlsim.so: RTL-level simulation (most accurate, slowest)
+// - libsimx.so: Software simulation (faster, less accurate)
+// - libvortex-simx.so: Full Vortex driver with simx backend
+#define VORTEX_RTLSIM_PATH VORTEX_BUILD_PATH "/runtime/librtlsim.so"
+#define VORTEX_SIMX_PATH VORTEX_BUILD_PATH "/runtime/libsimx.so"
+#define VORTEX_DRIVER_PATH VORTEX_BUILD_PATH "/runtime/libvortex-simx.so"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
