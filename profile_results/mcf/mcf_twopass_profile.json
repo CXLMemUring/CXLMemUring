@@ -1,0 +1,39 @@
+{
+  "num_regions": 2,
+  "clock_freq_mhz": 200.0,
+  "cxl_latency_ns": 165,
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "mcf_pricing_kernel",
+      "host_independent_work_ns": 25000,
+      "vortex_timing": {
+        "total_cycles": 45000,
+        "total_time_ns": 225000,
+        "compute_cycles": 15000,
+        "memory_stall_cycles": 30000,
+        "cache_hits": 500,
+        "cache_misses": 1500
+      },
+      "injection_delay_ns": 200000,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16
+    },
+    {
+      "region_id": 1,
+      "region_name": "mcf_price_out_impl",
+      "host_independent_work_ns": 10000,
+      "vortex_timing": {
+        "total_cycles": 8000,
+        "total_time_ns": 40000,
+        "compute_cycles": 5000,
+        "memory_stall_cycles": 3000,
+        "cache_hits": 800,
+        "cache_misses": 200
+      },
+      "injection_delay_ns": 30000,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 8
+    }
+  ]
+}

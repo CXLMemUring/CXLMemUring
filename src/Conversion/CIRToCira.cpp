@@ -311,14 +311,14 @@ struct CIRWhileLoopToCiraStreamPattern : public OpRewritePattern<scf::WhileOp> {
 
     // Get the element type from the pointer
     Type elementType = rewriter.getI64Type(); // Default to i64
-    if (analysis.ptrValue.getType().isa<MemRefType>()) {
-      elementType = analysis.ptrValue.getType().cast<MemRefType>().getElementType();
+    if (mlir::isa<MemRefType>(analysis.ptrValue.getType())) {
+      elementType = mlir::cast<MemRefType>(analysis.ptrValue.getType()).getElementType();
     }
 
     // Create stream type for the linked list traversal
-    auto streamType = StreamType::get(elementType, 0, analysis.nextPtrOffset);
-    auto futureType = FutureType::get(elementType);
-    auto handleType = HandleType::get(elementType);
+    auto streamType = StreamType::get(ctx, elementType, 0, analysis.nextPtrOffset);
+    auto futureType = FutureType::get(ctx, elementType);
+    auto handleType = HandleType::get(ctx, elementType);
 
     // Step 1: Create stream descriptor for indirect access pattern
     // %stream = cira.stream_create_indirect %start_node, offset=8 : !cira.stream
@@ -547,16 +547,16 @@ struct CIRWhileOpToCiraStreamPattern : public OpRewritePattern<cir::WhileOp> {
     Type elementType = rewriter.getI64Type();
 
     // Create stream type
-    auto streamType = StreamType::get(elementType, 0, analysis.nextPtrOffset);
-    auto futureType = FutureType::get(elementType);
+    auto streamType = StreamType::get(ctx, elementType, 0, analysis.nextPtrOffset);
+    auto futureType = FutureType::get(ctx, elementType);
 
     // Get start pointer from while loop operands/context
     Value startPtr;
     // Try to find the pointer being iterated
     whileOp.walk([&](Operation *op) {
       for (auto operand : op->getOperands()) {
-        if (operand.getType().isa<LLVM::LLVMPointerType>() ||
-            operand.getType().isa<MemRefType>()) {
+        if (mlir::isa<LLVM::LLVMPointerType>(operand.getType()) ||
+            mlir::isa<MemRefType>(operand.getType())) {
           startPtr = operand;
           return WalkResult::interrupt();
         }
@@ -569,7 +569,7 @@ struct CIRWhileOpToCiraStreamPattern : public OpRewritePattern<cir::WhileOp> {
     }
 
     // Create handle type and wrap start pointer
-    auto handleType = HandleType::get(elementType);
+    auto handleType = HandleType::get(ctx, elementType);
 
     // Step 1: Create stream for indirect access
     auto streamOp = rewriter.create<StreamCreateIndirectOp>(

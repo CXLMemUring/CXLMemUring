@@ -5,6 +5,7 @@ include "mlir/IR/OpBase.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 include "Dialect/RemoteMem.td"
 
@@ -310,7 +311,7 @@ def OffloadRegionOp : RemoteMem_Op<"offload", [SingleBlock, NoTerminator,
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    ($target^)? (`(` $operands^ `)`)? attr-dict (`:` functional-type($operands, $results)^)? $body
+    ($target^)? (`(` $operands^ `)`)? attr-dict-with-keyword (`:` functional-type($operands, $results)^)? $body
   }];
 }
 
@@ -336,7 +337,7 @@ def SpeculateOp : RemoteMem_Op<"speculate", [SingleBlock, NoTerminator]> {
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    (`confidence` `=` $confidence^)? attr-dict `:` type($results) $body
+    (`confidence` `=` $confidence^)? attr-dict-with-keyword `:` type($results) $body
   }];
 }
 
@@ -408,7 +409,7 @@ def OffloadStartOp : RemoteMem_Op<"offload_start", []> {
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    ($target^)? attr-dict $body
+    ($target^)? attr-dict-with-keyword $body
   }];
 }
 
@@ -476,7 +477,7 @@ def AdvanceStreamOp : RemoteMem_Op<"advance_stream", []> {
 }
 
 // Yield from speculative region
-def YieldOp : RemoteMem_Op<"yield", [Pure, Terminator, ReturnLike,
+def YieldOp : RemoteMem_Op<"yield", [Pure, Terminator,
                                      ParentOneOf<["SpeculateOp", "OffloadRegionOp"]>]> {
   let summary = "Yield values from a region";
   let description = [{

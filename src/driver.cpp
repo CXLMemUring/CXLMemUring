@@ -34,6 +34,7 @@
 #include "Dialect/RemoteMem.h"
 #include "Lowering/Passes.h"
 #include "Lowering/RemoteMemToLLVM.h"
+#include "Dialect/TwoPassTimingAnalysis.h"
 
 // ClangIR: CIR passes and pipelines
 #include <clang/CIR/Passes.h>
@@ -90,6 +91,9 @@ int main(int argc, char **argv) {
     mlir::registerCIRAConversionPasses();
     mlir::registerCIRALoweringPasses();
     mlir::registerRemoteMemPasses();
+
+    // register two-pass timing analysis passes
+    mlir::cira::registerTwoPassPasses();
 
     // register normal passes
     mlir::registerAllPasses();

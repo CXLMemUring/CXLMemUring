@@ -113,14 +113,17 @@ typedef struct {
     uint32_t optimal_prefetch_depth;    // Recommended prefetch lookahead
 } offload_region_profile_t;
 
+// Two-pass execution mode (defined at namespace level for C compatibility)
+typedef enum {
+    TWOPASS_MODE_DISABLED = 0,
+    TWOPASS_MODE_PROFILING = 1,     // Pass 1: collect timing
+    TWOPASS_MODE_INJECTION = 2      // Pass 2: inject delays
+} twopass_mode_t;
+
 // Two-pass execution context
 typedef struct {
     // Execution mode
-    enum {
-        TWOPASS_MODE_DISABLED = 0,
-        TWOPASS_MODE_PROFILING = 1,     // Pass 1: collect timing
-        TWOPASS_MODE_INJECTION = 2      // Pass 2: inject delays
-    } mode;
+    twopass_mode_t mode;
 
     // Profile data storage
     offload_region_profile_t* regions;

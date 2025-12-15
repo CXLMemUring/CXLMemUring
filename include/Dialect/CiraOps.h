@@ -7,9 +7,14 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 
 #include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"
+
+// Include the generated types (Handle, Future, Stream)
+#define GET_TYPEDEF_CLASSES
+#include "Dialect/RemoteMemTypes.h.inc"
 
 // Forward declarations
 namespace mlir {

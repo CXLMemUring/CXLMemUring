@@ -21,6 +21,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -286,10 +287,27 @@ struct TwoPassTimingInjectionPass
     : public PassWrapper<TwoPassTimingInjectionPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TwoPassTimingInjectionPass)
 
+  // Default constructor
+  TwoPassTimingInjectionPass() = default;
+
+  // Constructor with parameters (for programmatic use)
+  TwoPassTimingInjectionPass(StringRef profile, bool annotate = false)
+      : profilePathStr(profile.str()), annotateOnlyFlag(annotate) {}
+
+  // Copy constructor - required for clonePass()
+  TwoPassTimingInjectionPass(const TwoPassTimingInjectionPass& other)
+      : PassWrapper<TwoPassTimingInjectionPass, OperationPass<ModuleOp>>(),
+        profilePathStr(other.profilePathStr),
+        annotateOnlyFlag(other.annotateOnlyFlag) {}
+
   StringRef getArgument() const override { return "cira-twopass-timing"; }
   StringRef getDescription() const override {
     return "Inject timing annotations from two-pass profiling";
   }
+
+  // Stored values for copy constructor
+  std::string profilePathStr;
+  bool annotateOnlyFlag = false;
 
   Option<std::string> profilePath{*this, "profile",
                                    llvm::cl::desc("Path to timing profile JSON"),
@@ -298,6 +316,16 @@ struct TwoPassTimingInjectionPass
   Option<bool> annotateOnly{*this, "annotate-only",
                              llvm::cl::desc("Only add annotations, don't inject delays"),
                              llvm::cl::init(false)};
+
+  // Get effective profile path (from option or stored value)
+  std::string getProfilePath() const {
+    return profilePath.empty() ? profilePathStr : std::string(profilePath);
+  }
+
+  // Get effective annotate-only flag
+  bool getAnnotateOnly() const {
+    return annotateOnly || annotateOnlyFlag;
+  }
 
   void getDependentDialects(DialectRegistry& registry) const override {
     registry.insert<cira::RemoteMemDialect>();
@@ -312,8 +340,9 @@ struct TwoPassTimingInjectionPass
 
     // Load profiling data
     TwoPassProfileData profileData;
-    if (!profilePath.empty()) {
-      if (!profileData.load(profilePath)) {
+    std::string path = getProfilePath();
+    if (!path.empty()) {
+      if (!profileData.load(path)) {
         signalPassFailure();
         return;
       }
@@ -391,7 +420,7 @@ private:
     }
 
     // If not annotate-only, also update prefetch operations
-    if (!annotateOnly && profile) {
+    if (!getAnnotateOnly() && profile) {
       offloadOp.walk([&](PrefetchChainOp prefetchOp) {
         // Update prefetch depth based on profiling
         prefetchOp.setDepthAttr(
@@ -520,6 +549,13 @@ struct TimingInjectionCallsPass
   StringRef getArgument() const override { return "cira-inject-timing-calls"; }
   StringRef getDescription() const override {
     return "Insert runtime calls for timing injection";
+  }
+
+  void getDependentDialects(DialectRegistry& registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+    registry.insert<cira::RemoteMemDialect>();
+    registry.insert<arith::ArithDialect>();
+    registry.insert<func::FuncDialect>();
   }
 
   void runOnOperation() override {

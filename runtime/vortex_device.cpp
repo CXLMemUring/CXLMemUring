@@ -2,7 +2,6 @@
 // Bridges CIRA runtime (x86_64 host) with Vortex RISC-V SIMT device
 
 #include "vortex_device.h"
-#include <vortex.h>  // Vortex runtime header
 #include <iostream>
 #include <vector>
 #include <map>
@@ -10,6 +9,31 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+
+#ifdef VORTEX_FOUND
+#include <vortex.h>  // Vortex runtime header
+#else
+// Stub definitions when Vortex SDK is not available
+typedef void* vx_device_h;
+typedef void* vx_buffer_h;
+#define VX_CAPS_NUM_THREADS 0x1
+#define VX_CAPS_NUM_WARPS 0x2
+#define VX_CAPS_NUM_CORES 0x3
+#define VX_CAPS_CACHE_LINE_SIZE 0x4
+#define VX_CAPS_GLOBAL_MEM_SIZE 0x5
+#define VX_CAPS_LOCAL_MEM_SIZE 0x6
+static inline int vx_dev_open(vx_device_h*) { return -1; }
+static inline int vx_dev_close(vx_device_h) { return 0; }
+static inline int vx_dev_caps(vx_device_h, uint32_t, uint64_t*) { return -1; }
+static inline int vx_mem_alloc(vx_device_h, uint64_t, int, vx_buffer_h*) { return -1; }
+static inline int vx_mem_free(vx_buffer_h) { return 0; }
+static inline int vx_mem_address(vx_buffer_h, uint64_t*) { return -1; }
+static inline int vx_copy_to_dev(vx_buffer_h, const void*, uint64_t, uint64_t) { return -1; }
+static inline int vx_copy_from_dev(void*, vx_buffer_h, uint64_t, uint64_t) { return -1; }
+static inline int vx_start(vx_device_h, vx_buffer_h, vx_buffer_h) { return -1; }
+static inline int vx_ready_wait(vx_device_h, uint64_t) { return -1; }
+static inline int vx_upload_kernel_file(vx_device_h, const char*, vx_buffer_h*) { return -1; }
+#endif
 
 // Internal device structure
 struct vortex_device {

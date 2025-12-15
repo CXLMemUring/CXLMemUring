@@ -28,8 +28,23 @@ else()
     message(STATUS "Found libnuma: ${NUMA_LIBRARY}")
 endif()
 
+# Vortex SDK (optional, for hardware support)
+set(VORTEX_HOME "$ENV{HOME}/vortex" CACHE PATH "Vortex SDK root directory")
+if(EXISTS "${VORTEX_HOME}/runtime/include")
+    set(VORTEX_FOUND ON)
+    message(STATUS "Found Vortex SDK at: ${VORTEX_HOME}")
+else()
+    set(VORTEX_FOUND OFF)
+    message(STATUS "Vortex SDK not found at ${VORTEX_HOME}, building with simulation stubs")
+endif()
+
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+if(VORTEX_FOUND)
+    include_directories(${VORTEX_HOME}/runtime/include)
+    include_directories(${VORTEX_HOME}/build/hw)  # For VX_config.h
+endif()
 
 # Source files for the runtime library
 set(RUNTIME_SOURCES
@@ -53,6 +68,14 @@ if(NUMA_SUPPORT)
     target_compile_definitions(cira_runtime PUBLIC NUMA_SUPPORT)
 endif()
 
+if(VORTEX_FOUND)
+    target_compile_definitions(cira_runtime PUBLIC VORTEX_FOUND)
+    target_link_libraries(cira_runtime PUBLIC dl)
+    # Link to Vortex runtime library
+    target_link_libraries(cira_runtime PUBLIC ${VORTEX_HOME}/build/runtime/libvortex.so)
+    target_link_libraries(cira_runtime PUBLIC ${VORTEX_HOME}/build/runtime/libsimx.so)
+endif()
+
 # Create static library
 add_library(cira_runtime_static STATIC ${RUNTIME_SOURCES})
 set_target_properties(cira_runtime_static PROPERTIES OUTPUT_NAME cira_runtime)
@@ -65,6 +88,13 @@ target_link_libraries(cira_runtime_static
 if(NUMA_SUPPORT)
     target_link_libraries(cira_runtime_static PUBLIC ${NUMA_LIBRARY})
     target_compile_definitions(cira_runtime_static PUBLIC NUMA_SUPPORT)
+endif()
+
+if(VORTEX_FOUND)
+    target_compile_definitions(cira_runtime_static PUBLIC VORTEX_FOUND)
+    target_link_libraries(cira_runtime_static PUBLIC dl)
+    target_link_libraries(cira_runtime_static PUBLIC ${VORTEX_HOME}/build/runtime/libvortex.so)
+    target_link_libraries(cira_runtime_static PUBLIC ${VORTEX_HOME}/build/runtime/libsimx.so)
 endif()
 
 # Set library properties
