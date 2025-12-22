@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 
-LOCAL_CLANG_BIN="${REPO_ROOT}/llvm/build/bin/clang"
-LOCAL_CIR_OPT_BIN="${REPO_ROOT}/llvm/build/bin/cir-opt"
-LOCAL_MLIR_TRANSLATE_BIN="${REPO_ROOT}/llvm/build/bin/mlir-translate"
-LOCAL_LLC_BIN="${REPO_ROOT}/llvm/build/bin/llc"
+LOCAL_CLANG_BIN="${REPO_ROOT}/../clangir/build/bin/clang"
+LOCAL_CIR_OPT_BIN="${REPO_ROOT}/../clangir/build/bin/cir-opt"
+LOCAL_MLIR_TRANSLATE_BIN="${REPO_ROOT}/../clangir/build/bin/mlir-translate"
+LOCAL_LLC_BIN="${REPO_ROOT}/../clangir/build/bin/llc"
 
 # Prefer repo-built toolchain if available; fallback to system.
 if [[ -z "${CLANGIR_BIN:-}" ]]; then
@@ -387,7 +387,7 @@ done
 append_includes_from_env PIPELINE_EXTRA_INCLUDES
 append_includes_from_env "${BENCHMARK_ID}_EXTRA_INCLUDES"
 
-LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -L/usr/local/lib -Wl,--allow-multiple-definition -lcira_runtime)
+LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -L/usr/local/lib -Wl,--allow-multiple-definition -lstdc++ -L/home/victoryang00/CXLMemUring/build/runtime -Wl,-rpath,/home/victoryang00/CXLMemUring/build/runtime  -lcira_runtime)
 LINK_FLAGS+=("${BENCHMARK_EXTRA_LDFLAGS[@]}")
 append_flags_from_env PIPELINE_EXTRA_LDFLAGS LINK_FLAGS
 append_flags_from_env "${BENCHMARK_ID}_EXTRA_LDFLAGS" LINK_FLAGS
@@ -445,21 +445,21 @@ for src in "${SOURCES[@]}"; do
     continue
   fi
 
-  # Workaround: GAPBS .cc files have C++ exception handling that generates cf.br
-  # operations that the CIR pipeline can't legalize. Compile them natively.
-  if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == *.cc ]]; then
-    arch_dir="${OBJ_DIR}/${X86_ARCH}"
-    ensure_dir_writable "${arch_dir}"
-    obj="${arch_dir}/${stem}.o"
-    ensure_dir_writable "$(dirname "${obj}")"
-    info "    (native compilation - C++ exception handling bypass)"
-    NATIVE_CXX="/usr/bin/clang++"
-    [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
-    "${NATIVE_CXX}" -c -std=c++17 -fno-strict-aliasing \
-      "${INCLUDE_FLAGS[@]}" "${src}" \
-      -O3 -o "${obj}"
-    continue
-  fi
+  # NOTE: GAPBS native bypass disabled - compiling through CIR/Cira pipeline
+  # The original workaround was for C++ exception handling cf.br issues.
+  # if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == *.cc ]]; then
+  #   arch_dir="${OBJ_DIR}/${X86_ARCH}"
+  #   ensure_dir_writable "${arch_dir}"
+  #   obj="${arch_dir}/${stem}.o"
+  #   ensure_dir_writable "$(dirname "${obj}")"
+  #   info "    (native compilation - C++ exception handling bypass)"
+  #   NATIVE_CXX="/usr/bin/clang++"
+  #   [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
+  #   "${NATIVE_CXX}" -c -std=c++17 -fno-strict-aliasing \
+  #     "${INCLUDE_FLAGS[@]}" "${src}" \
+  #     -O3 -o "${obj}"
+  #   continue
+  # fi
 
   # Workaround: Some llama.cpp files trigger CIR frontend hangs or crashes.
   # Compile them natively for x86_64 and bypass the CIR/MLIR pipeline.
@@ -602,7 +602,14 @@ for src in "${SOURCES[@]}"; do
     continue
   fi
 
-  "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}"
+  # Note: -emit-cir has a known DiagStorageAllocator crash during cleanup.
+  # The CIR file is written before the crash, so we check for valid output.
+  "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}" 2>/dev/null || true
+  if [[ ! -s "${cir_path}" ]]; then
+    die "Failed to generate CIR for ${src}"
+  fi
+  
+  echo "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
   "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
 
   if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "MONETDB" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
@@ -619,8 +626,10 @@ for src in "${SOURCES[@]}"; do
     if [[ "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
       PASS_FLAGS+=(--cir-flatten-cfg)
     fi
-    PASS_FLAGS+=(--cir-goto-solver --cir-to-mlir --cir-mlir-to-llvm --reconcile-unrealized-casts)
+    # Use direct CIR to LLVM path for proper vtable and constructor support
+    PASS_FLAGS+=(--cir-goto-solver --cir-to-llvm)
 
+    echo "${CLANGIR_OPT_BIN}" "${PASS_FLAGS[@]}" "${cir_path}" -o "${direct_clean_path}"
     "${CLANGIR_OPT_BIN}" "${PASS_FLAGS[@]}" "${cir_path}" -o "${direct_clean_path}"
 
     # Scrub unrealized casts and any leftover scf/cf branches before export
@@ -633,12 +642,21 @@ for src in "${SOURCES[@]}"; do
     # Fix LLVM 22 syntax for compatibility with older LLC versions (v18)
     # - captures(none) -> nocapture
     # - getelementptr inbounds nuw -> getelementptr inbounds (remove nuw)
+    # - errnomem: none -> remove (not supported in older LLVM)
     sed -e 's/captures(none)/nocapture/g' \
         -e 's/writeonly captures(none)/writeonly nocapture/g' \
         -e 's/readonly captures(none)/readonly nocapture/g' \
         -e 's/getelementptr inbounds nuw/getelementptr inbounds/g' \
-        "${llvm_path}.raw" > "${llvm_path}"
+        -e 's/, errnomem: none//g' \
+        -e 's/errnomem: none, //g' \
+        -e 's/errnomem: none//g' \
+        "${llvm_path}.raw" > "${llvm_path}.tmp1"
     rm -f "${llvm_path}.raw"
+
+    # Generate empty function bodies for trivial C++ constructors that are
+    # declared but not defined (common issue with STL tag types, empty structs)
+    python3 "${REPO_ROOT}/scripts/fix_trivial_constructors.py" "${llvm_path}.tmp1" > "${llvm_path}"
+    rm -f "${llvm_path}.tmp1"
   else
     # Heterogeneous path via CIRA as before
     "${CIRA_BIN}" -allow-unregistered-dialect "${mlir_path}" \
@@ -703,6 +721,7 @@ for src in "${SOURCES[@]}"; do
 done
 
 info "Lowering Cira output to target objects"
+OPT_BIN="${REPO_ROOT}/../clangir/build/bin/opt"
 for arch in "${ARCHES[@]}"; do
   arch_dir="${OBJ_DIR}/${arch}"
   ensure_dir_writable "${arch_dir}"
@@ -710,10 +729,13 @@ for arch in "${ARCHES[@]}"; do
     rel="${ll#${LLVM_DIR}/}"
     stem="${rel%.ll}"
     obj="${arch_dir}/${stem}.o"
+    ll_opt="${ll%.ll}.opt.ll"
     ensure_dir_writable "$(dirname "${obj}")"
+    # Run opt to apply LLVM optimizations including NRVO before LLC
+    "${OPT_BIN}" -O2 -S "${ll}" -o "${ll_opt}" 2>/dev/null || cp "${ll}" "${ll_opt}"
     # Work around an LLVM CodeGenPrepare crash on some degenerate CFGs by
     # disabling CGP entirely for llc on these IR files.
-    "${LLC_BIN}" -O0 -filetype=obj -relocation-model=pic -disable-cgp -mtriple="${arch}" "${ll}" -o "${obj}"
+    "${LLC_BIN}" -O2 -filetype=obj -relocation-model=pic -disable-cgp -mtriple="${arch}" "${ll_opt}" -o "${obj}"
   done
 done
 
@@ -725,7 +747,18 @@ if [[ "${SKIP_LINK}" != "true" ]]; then
   (( ${#X86_OBJS[@]} > 0 )) || die "No x86_64 object files to link"
 
   ensure_dir_writable "${BIN_ROOT}/${X86_ARCH}"
-  "${LINKER_BIN}" -target "${X86_ARCH}" "${X86_OBJS[@]}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${BIN_NAME}"
+
+  # For GAPBS, each source file is a standalone benchmark - link separately
+  if [[ "${BENCHMARK_KEY}" == "gapbs" ]]; then
+    info "  Building separate GAPBS binaries..."
+    for obj in "${X86_OBJS[@]}"; do
+      bench_name=$(basename "${obj}" .o)
+      info "    Linking ${bench_name}..."
+      "${LINKER_BIN}" -target "${X86_ARCH}" "${obj}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${bench_name}"
+    done
+  else
+    "${LINKER_BIN}" -target "${X86_ARCH}" "${X86_OBJS[@]}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${BIN_NAME}"
+  fi
 else
   info "Skipping binary linkage for ${BENCHMARK} (configured to skip)"
 fi
@@ -755,11 +788,20 @@ if [[ "${BUILD_HETERO:-false}" == "true" ]] || [[ "${BENCHMARK}" == "mcf" ]]; th
       LINK_OBJS=("${RISCV64_OBJS[@]}")
       [[ -f "${STUB_FILE}" ]] && LINK_OBJS+=("${STUB_FILE}")
 
-      riscv64-linux-gnu-g++ "${LINK_OBJS[@]}" \
-        -o "${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}" 2>/dev/null || {
-          info "  Note: riscv64 linking failed, copying objects instead"
-          find "${OBJ_DIR}/${RISCV64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${RISCV64_ARCH}" \;
-        }
+      # For GAPBS, link each benchmark separately
+      if [[ "${BENCHMARK_KEY}" == "gapbs" ]]; then
+        for obj in "${RISCV64_OBJS[@]}"; do
+          bench_name=$(basename "${obj}" .o)
+          riscv64-linux-gnu-g++ "${obj}" ${STUB_FILE:+"${STUB_FILE}"} \
+            -o "${BIN_ROOT}/${RISCV64_ARCH}/${bench_name}" 2>/dev/null || true
+        done
+      else
+        riscv64-linux-gnu-g++ "${LINK_OBJS[@]}" \
+          -o "${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}" 2>/dev/null || {
+            info "  Note: riscv64 linking failed, copying objects instead"
+            find "${OBJ_DIR}/${RISCV64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${RISCV64_ARCH}" \;
+          }
+      fi
     else
       info "  Note: riscv64-linux-gnu-g++ not found, copying objects for manual linking"
       find "${OBJ_DIR}/${RISCV64_ARCH}" -type f -name '*.o' -exec cp {} "${BIN_ROOT}/${RISCV64_ARCH}" \;
@@ -771,13 +813,22 @@ fi
 
 info "Build completed"
 if [[ "${SKIP_LINK}" != "true" ]]; then
-  info "  x86_64 binary: ${BIN_ROOT}/${X86_ARCH}/${BIN_NAME}"
+  if [[ "${BENCHMARK_KEY}" == "gapbs" ]]; then
+    info "  x86_64 binaries in: ${BIN_ROOT}/${X86_ARCH}/"
+    for bin in "${BIN_ROOT}/${X86_ARCH}"/*; do
+      [[ -x "$bin" ]] && info "    - $(basename "$bin")"
+    done
+  else
+    info "  x86_64 binary: ${BIN_ROOT}/${X86_ARCH}/${BIN_NAME}"
+  fi
 else
   info "  x86_64 objects available under ${OBJ_DIR}/${X86_ARCH} (link step skipped)"
 fi
 
 # Check if riscv64 binary was created
-if [[ -f "${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}" ]]; then
+if [[ "${BENCHMARK_KEY}" == "gapbs" ]]; then
+  info "  riscv64 binaries/objects: ${BIN_ROOT}/${RISCV64_ARCH}/"
+elif [[ -f "${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}" ]]; then
   info "  riscv64 binary: ${BIN_ROOT}/${RISCV64_ARCH}/${BIN_NAME}"
 else
   info "  riscv64 objects: ${BIN_ROOT}/${RISCV64_ARCH}"
