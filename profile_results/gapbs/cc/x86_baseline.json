@@ -1,0 +1,21 @@
+{
+  "profile_type": "cc_baseline",
+  "target": "x86_64",
+  "benchmark": "cc",
+  "execution_time_ms": 1158,
+  "graph_args": "-g 10",
+  "kernels": {
+    "Link": {
+      "estimated_time_ms": 579,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+,
+    "Compress": {
+      "estimated_time_ms": 579,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+
+  }
+}

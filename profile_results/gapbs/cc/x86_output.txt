@@ -1,0 +1,3 @@
+Generate Time:       0.00365
+Build Time:          0.00055
+Graph has 1024 nodes and 10496 undirected edges for degree: 10

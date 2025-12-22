@@ -1,0 +1,15 @@
+{
+  "profile_type": "sssp_baseline",
+  "target": "x86_64",
+  "benchmark": "sssp",
+  "execution_time_ms": 1169,
+  "graph_args": "-g 10",
+  "kernels": {
+    "DeltaStep": {
+      "estimated_time_ms": 1169,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+
+  }
+}

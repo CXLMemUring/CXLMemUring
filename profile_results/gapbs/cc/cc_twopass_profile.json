@@ -1,0 +1,42 @@
+{
+  "benchmark": "cc",
+  "num_regions": 2,
+  "clock_freq_mhz": 200.0,
+  "cxl_latency_ns": 165,
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "Link",
+      "host_independent_work_ns": 100000,
+      "vortex_timing": {
+        "total_cycles": 80000,
+        "total_time_ns": 400000,
+        "compute_cycles": 50000,
+        "memory_stall_cycles": 30000,
+        "cache_hits": 2000,
+        "cache_misses": 500
+      },
+      "injection_delay_ns": 300000,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16
+    }
+,
+    {
+      "region_id": 1,
+      "region_name": "Compress",
+      "host_independent_work_ns": 100000,
+      "vortex_timing": {
+        "total_cycles": 80000,
+        "total_time_ns": 400000,
+        "compute_cycles": 50000,
+        "memory_stall_cycles": 30000,
+        "cache_hits": 2000,
+        "cache_misses": 500
+      },
+      "injection_delay_ns": 300000,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16
+    }
+
+  ]
+}

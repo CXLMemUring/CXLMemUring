@@ -1,0 +1,62 @@
+{
+  "experiment": "gapbs_heterogeneous_profiling",
+  "timestamp": "2025-12-22T03:18:26+00:00",
+  "benchmarks": {
+    "bc": {
+      "x86_time_ms": 14,
+      "vortex_time_ns": 303700,
+      "kernels": "BFSIter,BCUpdate",
+      "profile_generated": true
+    }
+,
+    "bfs": {
+      "x86_time_ms": 8,
+      "vortex_time_ns": 397100,
+      "kernels": "BUStep,TDStep",
+      "profile_generated": true
+    }
+,
+    "cc": {
+      "x86_time_ms": 1158,
+      "vortex_time_ns": 407920,
+      "kernels": "Link,Compress",
+      "profile_generated": true
+    }
+,
+    "cc_sv": {
+      "x86_time_ms": 12,
+      "vortex_time_ns": 378395,
+      "kernels": "SV_CC",
+      "profile_generated": true
+    }
+,
+    "pr": {
+      "x86_time_ms": 11,
+      "vortex_time_ns": 404525,
+      "kernels": "PageRankPull",
+      "profile_generated": true
+    }
+,
+    "pr_spmv": {
+      "x86_time_ms": 22,
+      "vortex_time_ns": 282550,
+      "kernels": "SpMV",
+      "profile_generated": true
+    }
+,
+    "sssp": {
+      "x86_time_ms": 1169,
+      "vortex_time_ns": 367750,
+      "kernels": "DeltaStep",
+      "profile_generated": true
+    }
+,
+    "tc": {
+      "x86_time_ms": 14,
+      "vortex_time_ns": 384060,
+      "kernels": "OrderedCount,OrderedCountIntersect",
+      "profile_generated": true
+    }
+
+  }
+}

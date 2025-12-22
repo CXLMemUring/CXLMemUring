@@ -1,0 +1,15 @@
+{
+  "profile_type": "cc_sv_baseline",
+  "target": "x86_64",
+  "benchmark": "cc_sv",
+  "execution_time_ms": 12,
+  "graph_args": "-g 10",
+  "kernels": {
+    "SV_CC": {
+      "estimated_time_ms": 12,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+
+  }
+}

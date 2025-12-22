@@ -1,0 +1,28 @@
+{
+  "profile_type": "profile_guided_offload",
+  "version": "1.0",
+  "benchmark": "cc_sv",
+  "baseline": {
+    "profile_type": "cc_sv_baseline",
+    "target": "x86_64",
+    "execution_time_ms": 12
+  },
+  "vortex": {
+    "profile_type": "vortex_estimated",
+    "target": "riscv_vortex",
+    "timing": {
+      "kernel_latency_ns": 378395,
+      "h2d_latency_ns": 10000000,
+      "d2h_latency_ns": 5000000
+    },
+    "bandwidth": {
+      "h2d_gbps": 10.0,
+      "d2h_gbps": 10.0
+    }
+  },
+  "compilation_hints": {
+    "primary_offload_kernels": "SV_CC",
+    "target_architecture": "riscv_vortex",
+    "optimization_level": "O3"
+  }
+}

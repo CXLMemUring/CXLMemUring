@@ -1,0 +1,11 @@
+{
+  "profile_type": "vortex_simulated",
+  "benchmark": "cc",
+  "target": "riscv_vortex",
+  "timing": {
+    "total_cycles": 81584,
+    "total_time_ns": 407920,
+    "kernel_latency_ns": 407920
+  },
+  "status": "simulated"
+}

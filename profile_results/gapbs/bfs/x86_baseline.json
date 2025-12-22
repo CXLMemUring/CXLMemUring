@@ -1,0 +1,21 @@
+{
+  "profile_type": "bfs_baseline",
+  "target": "x86_64",
+  "benchmark": "bfs",
+  "execution_time_ms": 8,
+  "graph_args": "-g 10",
+  "kernels": {
+    "BUStep": {
+      "estimated_time_ms": 4,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+,
+    "TDStep": {
+      "estimated_time_ms": 4,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "benchmark": "pr_spmv",
+  "num_regions": 1,
+  "clock_freq_mhz": 200.0,
+  "cxl_latency_ns": 165,
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "SpMV",
+      "host_independent_work_ns": 75000,
+      "vortex_timing": {
+        "total_cycles": 60000,
+        "total_time_ns": 300000,
+        "compute_cycles": 40000,
+        "memory_stall_cycles": 20000,
+        "cache_hits": 2000,
+        "cache_misses": 500
+      },
+      "injection_delay_ns": 225000,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16
+    }
+
+  ]
+}

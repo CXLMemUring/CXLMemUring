@@ -1,0 +1,21 @@
+{
+  "profile_type": "tc_baseline",
+  "target": "x86_64",
+  "benchmark": "tc",
+  "execution_time_ms": 14,
+  "graph_args": "-g 10",
+  "kernels": {
+    "OrderedCount": {
+      "estimated_time_ms": 7,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+,
+    "OrderedCountIntersect": {
+      "estimated_time_ms": 7,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "profile_type": "bc_baseline",
+  "target": "x86_64",
+  "benchmark": "bc",
+  "execution_time_ms": 14,
+  "graph_args": "-g 10",
+  "kernels": {
+    "BFSIter": {
+      "estimated_time_ms": 7,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+,
+    "BCUpdate": {
+      "estimated_time_ms": 7,
+      "offload_candidate": true,
+      "parallelism": "data_parallel"
+    }
+
+  }
+}
