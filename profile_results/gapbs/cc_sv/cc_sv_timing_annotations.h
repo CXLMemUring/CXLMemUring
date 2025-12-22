@@ -16,7 +16,7 @@ typedef struct {
 } cira_region_annotation_t;
 
 static const cira_region_annotation_t cira_annotations[] = {
-    { 0, 300000, 16, false },
+    { 0, 375000, 16, false },
 };
 #define CIRA_NUM_ANNOTATIONS 1
 

@@ -12,9 +12,7 @@
         "total_cycles": 180000,
         "total_time_ns": 900000,
         "compute_cycles": 100000,
-        "memory_stall_cycles": 80000,
-        "cache_hits": 2000,
-        "cache_misses": 500
+        "memory_stall_cycles": 80000
       },
       "injection_delay_ns": 675000,
       "latency_hidden": false,
@@ -29,9 +27,7 @@
         "total_cycles": 180000,
         "total_time_ns": 900000,
         "compute_cycles": 100000,
-        "memory_stall_cycles": 80000,
-        "cache_hits": 2000,
-        "cache_misses": 500
+        "memory_stall_cycles": 80000
       },
       "injection_delay_ns": 675000,
       "latency_hidden": false,

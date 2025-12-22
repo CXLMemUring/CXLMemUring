@@ -5,13 +5,14 @@
   "baseline": {
     "profile_type": "bfs_baseline",
     "target": "x86_64",
-    "execution_time_ms": 8
+    "execution_time_ms": 20
   },
   "vortex": {
     "profile_type": "vortex_estimated",
     "target": "riscv_vortex",
     "timing": {
-      "kernel_latency_ns": 397100,
+      "kernel_latency_ns": 739345,
+      "total_kernel_time_ms": 0,
       "h2d_latency_ns": 10000000,
       "d2h_latency_ns": 5000000
     },
@@ -19,6 +20,16 @@
       "h2d_gbps": 10.0,
       "d2h_gbps": 10.0
     }
+  },
+  "timing_injection": {
+    "injected_time_ms": 87,
+    "slowdown_vs_baseline": 4.350
+  },
+  "heterogeneous_estimate": {
+    "estimated_time_ms": 110,
+    "speedup_vs_baseline": .181,
+    "kernel_calls": 50,
+    "data_transfer_overhead_ms": 100
   },
   "compilation_hints": {
     "primary_offload_kernels": "BUStep,TDStep",

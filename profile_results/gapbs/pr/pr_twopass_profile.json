@@ -12,9 +12,7 @@
         "total_cycles": 60000,
         "total_time_ns": 300000,
         "compute_cycles": 40000,
-        "memory_stall_cycles": 20000,
-        "cache_hits": 2000,
-        "cache_misses": 500
+        "memory_stall_cycles": 20000
       },
       "injection_delay_ns": 225000,
       "latency_hidden": false,

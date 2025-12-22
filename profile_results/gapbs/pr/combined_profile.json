@@ -5,13 +5,14 @@
   "baseline": {
     "profile_type": "pr_baseline",
     "target": "x86_64",
-    "execution_time_ms": 11
+    "execution_time_ms": 15
   },
   "vortex": {
     "profile_type": "vortex_estimated",
     "target": "riscv_vortex",
     "timing": {
-      "kernel_latency_ns": 404525,
+      "kernel_latency_ns": 359135,
+      "total_kernel_time_ms": 0,
       "h2d_latency_ns": 10000000,
       "d2h_latency_ns": 5000000
     },
@@ -19,6 +20,16 @@
       "h2d_gbps": 10.0,
       "d2h_gbps": 10.0
     }
+  },
+  "timing_injection": {
+    "injected_time_ms": 27,
+    "slowdown_vs_baseline": 1.800
+  },
+  "heterogeneous_estimate": {
+    "estimated_time_ms": 47,
+    "speedup_vs_baseline": .319,
+    "kernel_calls": 20,
+    "data_transfer_overhead_ms": 40
   },
   "compilation_hints": {
     "primary_offload_kernels": "PageRankPull",

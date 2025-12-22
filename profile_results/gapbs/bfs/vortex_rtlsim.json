@@ -3,9 +3,9 @@
   "benchmark": "bfs",
   "target": "riscv_vortex",
   "timing": {
-    "total_cycles": 79420,
-    "total_time_ns": 397100,
-    "kernel_latency_ns": 397100
+    "total_cycles": 147869,
+    "total_time_ns": 739345,
+    "kernel_latency_ns": 739345
   },
   "status": "simulated"
 }

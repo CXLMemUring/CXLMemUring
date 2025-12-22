@@ -2,13 +2,13 @@
   "profile_type": "pr_baseline",
   "target": "x86_64",
   "benchmark": "pr",
-  "execution_time_ms": 11,
-  "graph_args": "-g 10",
+  "graph_scale": 10,
+  "execution_time_ms": 15,
+  "num_trials": 3,
   "kernels": {
     "PageRankPull": {
-      "estimated_time_ms": 11,
-      "offload_candidate": true,
-      "parallelism": "data_parallel"
+      "estimated_time_ms": 15,
+      "offload_candidate": true
     }
 
   }

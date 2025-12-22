@@ -2,13 +2,13 @@
   "profile_type": "pr_spmv_baseline",
   "target": "x86_64",
   "benchmark": "pr_spmv",
-  "execution_time_ms": 22,
-  "graph_args": "-g 10",
+  "graph_scale": 10,
+  "execution_time_ms": 34,
+  "num_trials": 3,
   "kernels": {
     "SpMV": {
-      "estimated_time_ms": 22,
-      "offload_candidate": true,
-      "parallelism": "data_parallel"
+      "estimated_time_ms": 34,
+      "offload_candidate": true
     }
 
   }

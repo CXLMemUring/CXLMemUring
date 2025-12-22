@@ -2,19 +2,18 @@
   "profile_type": "bfs_baseline",
   "target": "x86_64",
   "benchmark": "bfs",
-  "execution_time_ms": 8,
-  "graph_args": "-g 10",
+  "graph_scale": 10,
+  "execution_time_ms": 20,
+  "num_trials": 3,
   "kernels": {
     "BUStep": {
-      "estimated_time_ms": 4,
-      "offload_candidate": true,
-      "parallelism": "data_parallel"
+      "estimated_time_ms": 10,
+      "offload_candidate": true
     }
 ,
     "TDStep": {
-      "estimated_time_ms": 4,
-      "offload_candidate": true,
-      "parallelism": "data_parallel"
+      "estimated_time_ms": 10,
+      "offload_candidate": true
     }
 
   }
