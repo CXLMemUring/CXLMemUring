@@ -1,0 +1,159 @@
+{
+  "profile_type": "monetdb_tpcc_twopass",
+  "version": "1.0",
+  "timestamp": "2025-12-27T22:47:56.620146",
+  "configuration": {
+    "warehouses": 1,
+    "scale": 0.1,
+    "duration_seconds": 60,
+    "clock_freq_mhz": 200.0,
+    "cxl_latency_ns": 165
+  },
+  "num_regions": 5,
+  "clock_freq_mhz": 200.0,
+  "cxl_latency_ns": 165,
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "tpcc_new_order",
+      "transaction_type": "new_order",
+      "invocation_count": 1457,
+      "host_independent_work_ns": 7006,
+      "vortex_timing": {
+        "total_cycles": 4670,
+        "total_time_ns": 23350,
+        "compute_cycles": 1401,
+        "memory_stall_cycles": 3269,
+        "cache_hits": 0,
+        "cache_misses": 0
+      },
+      "baseline_timing": {
+        "avg_latency_ms": 23.353428732637028,
+        "min_latency_ms": 12.218475341796875,
+        "max_latency_ms": 109.21120643615723,
+        "total_time_ms": 34025.94566345215
+      },
+      "injection_delay_ns": 16344,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16,
+      "injected_avg_ms": 23.369772732637028,
+      "total_injected_delay_ms": 23.813208
+    },
+    {
+      "region_id": 1,
+      "region_name": "tpcc_payment",
+      "transaction_type": "payment",
+      "invocation_count": 1422,
+      "host_independent_work_ns": 4227,
+      "vortex_timing": {
+        "total_cycles": 2818,
+        "total_time_ns": 14090,
+        "compute_cycles": 845,
+        "memory_stall_cycles": 1973,
+        "cache_hits": 0,
+        "cache_misses": 0
+      },
+      "baseline_timing": {
+        "avg_latency_ms": 14.092912653830483,
+        "min_latency_ms": 8.936405181884766,
+        "max_latency_ms": 58.73990058898926,
+        "total_time_ms": 20040.12179374695
+      },
+      "injection_delay_ns": 9863,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16,
+      "injected_avg_ms": 14.102775653830482,
+      "total_injected_delay_ms": 14.025186
+    },
+    {
+      "region_id": 2,
+      "region_name": "tpcc_order_status",
+      "transaction_type": "order_status",
+      "invocation_count": 135,
+      "host_independent_work_ns": 3397,
+      "vortex_timing": {
+        "total_cycles": 2264,
+        "total_time_ns": 11320,
+        "compute_cycles": 679,
+        "memory_stall_cycles": 1585,
+        "cache_hits": 0,
+        "cache_misses": 0
+      },
+      "baseline_timing": {
+        "avg_latency_ms": 11.32642074867531,
+        "min_latency_ms": 6.710529327392578,
+        "max_latency_ms": 22.806644439697266,
+        "total_time_ms": 1529.066801071167
+      },
+      "injection_delay_ns": 7923,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16,
+      "injected_avg_ms": 11.33434374867531,
+      "total_injected_delay_ms": 1.069605
+    },
+    {
+      "region_id": 3,
+      "region_name": "tpcc_delivery",
+      "transaction_type": "delivery",
+      "invocation_count": 137,
+      "host_independent_work_ns": 5768,
+      "vortex_timing": {
+        "total_cycles": 3845,
+        "total_time_ns": 19225,
+        "compute_cycles": 1153,
+        "memory_stall_cycles": 2692,
+        "cache_hits": 0,
+        "cache_misses": 0
+      },
+      "baseline_timing": {
+        "avg_latency_ms": 19.22951301519018,
+        "min_latency_ms": 13.434171676635742,
+        "max_latency_ms": 41.44597053527832,
+        "total_time_ms": 2634.4432830810547
+      },
+      "injection_delay_ns": 13457,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16,
+      "injected_avg_ms": 19.242970015190178,
+      "total_injected_delay_ms": 1.843609
+    },
+    {
+      "region_id": 4,
+      "region_name": "tpcc_stock_level",
+      "transaction_type": "stock_level",
+      "invocation_count": 128,
+      "host_independent_work_ns": 3154,
+      "vortex_timing": {
+        "total_cycles": 2101,
+        "total_time_ns": 10505,
+        "compute_cycles": 630,
+        "memory_stall_cycles": 1471,
+        "cache_hits": 0,
+        "cache_misses": 0
+      },
+      "baseline_timing": {
+        "avg_latency_ms": 10.513605549931526,
+        "min_latency_ms": 6.617069244384766,
+        "max_latency_ms": 23.849010467529297,
+        "total_time_ms": 1345.7415103912354
+      },
+      "injection_delay_ns": 7351,
+      "latency_hidden": false,
+      "optimal_prefetch_depth": 16,
+      "injected_avg_ms": 10.520956549931526,
+      "total_injected_delay_ms": 0.940928
+    }
+  ],
+  "analysis": {
+    "baseline_tpm": 3277.4306485436696,
+    "baseline_new_order_tpm": 1456.3026699994289,
+    "injected_tpm_estimate": 3275.1386115618966,
+    "slowdown_factor": 1.0006998290007274,
+    "total_injected_delay_ms": 41.692536000000004,
+    "heterogeneous_estimate": {
+      "estimated_tpm": 3275.1386115618966,
+      "speedup_vs_baseline": 0.9993006604173938,
+      "offload_benefit": "negative"
+    }
+  }
+}

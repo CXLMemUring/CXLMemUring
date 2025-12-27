@@ -1,0 +1,72 @@
+{
+  "profile_type": "monetdb_tpcc_injected",
+  "version": "1.0",
+  "timestamp": "2025-12-27T22:47:56.593062",
+  "baseline_profile": "/home/victoryang00/CXLMemUring/profile_results/monetdb/baseline_profile.json",
+  "configuration": {
+    "warehouses": 1,
+    "scale": 0.1,
+    "duration_seconds": 60,
+    "clock_freq_mhz": 200.0,
+    "cxl_latency_ns": 165
+  },
+  "timing_injection": {
+    "total_injected_delay_ms": 41.692536000000004,
+    "baseline_time_ms": 59575.319051742554,
+    "injected_time_ms": 59617.011587742556,
+    "slowdown_factor": 1.0006998290007274
+  },
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "tpcc_new_order",
+      "injection_delay_ns": 16344,
+      "invocation_count": 1457,
+      "total_injected_delay_ms": 23.813208,
+      "baseline_avg_ms": 23.353428732637028,
+      "injected_avg_ms": 23.369772732637028
+    },
+    {
+      "region_id": 1,
+      "region_name": "tpcc_payment",
+      "injection_delay_ns": 9863,
+      "invocation_count": 1422,
+      "total_injected_delay_ms": 14.025186,
+      "baseline_avg_ms": 14.092912653830483,
+      "injected_avg_ms": 14.102775653830482
+    },
+    {
+      "region_id": 2,
+      "region_name": "tpcc_order_status",
+      "injection_delay_ns": 7923,
+      "invocation_count": 135,
+      "total_injected_delay_ms": 1.069605,
+      "baseline_avg_ms": 11.32642074867531,
+      "injected_avg_ms": 11.33434374867531
+    },
+    {
+      "region_id": 3,
+      "region_name": "tpcc_delivery",
+      "injection_delay_ns": 13457,
+      "invocation_count": 137,
+      "total_injected_delay_ms": 1.843609,
+      "baseline_avg_ms": 19.22951301519018,
+      "injected_avg_ms": 19.242970015190178
+    },
+    {
+      "region_id": 4,
+      "region_name": "tpcc_stock_level",
+      "injection_delay_ns": 7351,
+      "invocation_count": 128,
+      "total_injected_delay_ms": 0.940928,
+      "baseline_avg_ms": 10.513605549931526,
+      "injected_avg_ms": 10.520956549931526
+    }
+  ],
+  "summary": {
+    "baseline_tpm": 3277.4306485436696,
+    "injected_tpm_estimate": 3275.1386115618966,
+    "slowdown_factor": 1.0006998290007274,
+    "total_injected_delay_ms": 41.692536000000004
+  }
+}

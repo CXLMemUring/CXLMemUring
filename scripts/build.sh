@@ -228,6 +228,7 @@ case "${BENCHMARK_KEY}" in
       "${REPO_ROOT}/bench/MonetDB/sql/common"
       "${REPO_ROOT}/bench/MonetDB/sql/server"
       "${REPO_ROOT}/bench/MonetDB/sql/storage"
+      "${REPO_ROOT}/bench/MonetDB/clients/mapilib"
     )
     EXCLUDE_PATTERNS=(
       "/sql/benchmarks/"
@@ -241,7 +242,11 @@ case "${BENCHMARK_KEY}" in
       "/gdk/Tests/"
       "/testing/"
       "/documentation/"
-      "/clients/"
+      "/clients/odbc/"
+      "/clients/mapiclient/"
+      "/clients/examples/"
+      "/clients/ruby/"
+      "/clients/Tests/"
       "/geom/"
       "/tools/merovingian/"
       "/tools/monetdbe/"
@@ -253,11 +258,18 @@ case "${BENCHMARK_KEY}" in
       "/fits/"                  # Missing fitsio.h external library
       "/netcdf/"                # Missing netcdf.h external library
       "/shp/"                   # Missing gdal.h external library
+      "/openssl_windows.c"      # Windows-specific
     )
-    EXTRA_SOURCES=("${REPO_ROOT}/bench/MonetDB/tools/mserver/mserver5.c")
+    # Include generated parser file and monet_version.c
+    EXTRA_SOURCES=(
+      "${REPO_ROOT}/bench/MonetDB/tools/mserver/mserver5.c"
+      "${REPO_ROOT}/bench/MonetDB/build/tools/mserver/monet_version.c"
+      "${REPO_ROOT}/bench/MonetDB/build/sql/server/sql_parser.tab.c"
+    )
     BENCHMARK_EXTRA_INCLUDES=(
       "${REPO_ROOT}/bench/MonetDB/build/common/utils/"
       "${REPO_ROOT}/bench/MonetDB/build"
+      "${REPO_ROOT}/bench/MonetDB/build/sql/server"
       "${REPO_ROOT}/bench/MonetDB/common/stream/"
       "${REPO_ROOT}/bench/MonetDB/common/options/"
       "${REPO_ROOT}/bench/MonetDB/common/utils/"
@@ -278,9 +290,11 @@ case "${BENCHMARK_KEY}" in
       "${REPO_ROOT}/bench/MonetDB/sql/backends/monet5"
       "${REPO_ROOT}/bench/MonetDB/tools/mserver"
       "${REPO_ROOT}/bench/MonetDB/clients/mapilib"
+      "/usr/include/libxml2"
     )
-    BENCHMARK_EXTRA_CFLAGS+=(-D_GNU_SOURCE -DLIBMAL -DLIBMONETDB5 -DLIBOPTIMIZER -DLIBGDK -DLIBSTREAM -DLIBSQL -DLIBMAPI)
-    BENCHMARK_EXTRA_LDFLAGS=(-lpthread -ldl -lm)
+    BENCHMARK_EXTRA_CFLAGS+=(-D_GNU_SOURCE -DLIBMAL -DLIBMONETDB5 -DLIBOPTIMIZER -DLIBGDK -DLIBSTREAM -DLIBSQL -DLIBMAPI -DHAVE_MAPI)
+    # Add external library dependencies: zlib, liblzma, OpenSSL
+    BENCHMARK_EXTRA_LDFLAGS=(-lpthread -ldl -lm -lz -llzma -lssl -lcrypto)
     WORK_ROOT="${WORK_BASE_DIR}/monetdb_pipeline"
     BIN_ROOT="${BIN_BASE_DIR}/monetdb"
     BIN_NAME="mserver5"
@@ -488,6 +502,12 @@ for src in "${SOURCES[@]}"; do
   # Compile these natively using system clang (not clangir which has bugs).
   # Files that need native compilation - patterns support glob matching
   MONETDB_NATIVE_PATTERNS=(
+    # MAPI client library files - OpenSSL and va_copy issues
+    "connect_openssl.c"       # Requires OpenSSL headers for TLS support
+    "connect.c"               # Uses va_copy which isn't lowered correctly by ClangIR
+    "msettings.c"             # Uses va_copy which isn't lowered correctly by ClangIR
+    "monet_version.c"         # Generated file - compile natively
+    "mserver5.c"              # Main entry point - compile natively for compatibility
     # GDK files have many issues with switch statements, deep nesting, etc.
     "gdk_*.c"                 # Most gdk files have conversion issues
     # Stream files have switch statement issues
@@ -604,6 +624,7 @@ for src in "${SOURCES[@]}"; do
 
   # Note: -emit-cir has a known DiagStorageAllocator crash during cleanup.
   # The CIR file is written before the crash, so we check for valid output.
+  echo "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}"
   "${CLANGIR_BIN}" -fclangir -emit-cir -S -fno-strict-aliasing "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" -o "${cir_path}" 2>/dev/null || true
   if [[ ! -s "${cir_path}" ]]; then
     die "Failed to generate CIR for ${src}"
