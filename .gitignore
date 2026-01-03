@@ -29,3 +29,5 @@ build
 *log
 *dir
 *md
+tpcc_data
+dbfarm

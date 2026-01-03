@@ -304,6 +304,7 @@ case "${BENCHMARK_KEY}" in
     SOURCE_DIRS=("${REPO_ROOT}/bench/DataFrame/src")
     EXTRA_SOURCES=("${REPO_ROOT}/bench/DataFrame/benchmarks/dataframe_performance.cc")
     BENCHMARK_EXTRA_INCLUDES=("${REPO_ROOT}/bench/DataFrame/include")
+    # DataFrame requires C++20 (set via CXX_STD) and exceptions/RTTI
     BENCHMARK_EXTRA_CXXFLAGS+=(-fexceptions -frtti)
     BENCHMARK_EXTRA_LDFLAGS=(-lpthread)
     if [[ "$(uname -s 2>/dev/null)" == "Linux" ]]; then
@@ -376,7 +377,12 @@ CFLAGS+=("${BENCHMARK_EXTRA_CFLAGS[@]}")
 append_flags_from_env PIPELINE_EXTRA_CFLAGS CFLAGS
 append_flags_from_env "${BENCHMARK_ID}_EXTRA_CFLAGS" CFLAGS
 
-CXXFLAGS=(-std=c++17 -fno-exceptions -fno-rtti)
+# Default C++ standard is C++17, but some benchmarks need C++20
+CXX_STD="${CXX_STD:-c++17}"
+if [[ "${BENCHMARK_ID}" == "DATAFRAME" ]]; then
+    CXX_STD="c++20"
+fi
+CXXFLAGS=(-std=${CXX_STD} -fno-exceptions -fno-rtti)
 CXXFLAGS+=("${BENCHMARK_EXTRA_CXXFLAGS[@]}")
 append_flags_from_env PIPELINE_EXTRA_CXXFLAGS CXXFLAGS
 append_flags_from_env "${BENCHMARK_ID}_EXTRA_CXXFLAGS" CXXFLAGS
@@ -630,10 +636,19 @@ for src in "${SOURCES[@]}"; do
     die "Failed to generate CIR for ${src}"
   fi
   
-  echo "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
-  "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
-
+  # Check if we should use the direct CIR -> LLVM path (bypasses the crashing cir-to-mlir pass)
+  USE_DIRECT_PATH=false
   if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "MONETDB" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
+    USE_DIRECT_PATH=true
+  fi
+
+  if [[ "${USE_DIRECT_PATH}" == "false" ]]; then
+    # Only run cir-to-mlir for heterogeneous path (non-direct benchmarks)
+    echo "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
+    "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
+  fi
+
+  if [[ "${USE_DIRECT_PATH}" == "true" ]]; then
     # Direct CIR -> MLIR -> LLVM dialect lowering and export
     direct_clean_path="${LLVM_DIR}/${stem}.clean.llvm.mlir"
     ensure_dir_writable "$(dirname "${direct_clean_path}")"
@@ -644,7 +659,7 @@ for src in "${SOURCES[@]}"; do
     # - MCF: aggressive CFG simplification for legalizers
     # - DATAFRAME: has early returns inside loops that SCF can't handle directly
     PASS_FLAGS=(--allow-unregistered-dialect)
-    if [[ "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
+    if [[ "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "GAPBS" || "${BENCHMARK_ID}" == "LLAMACPP" ]]; then
       PASS_FLAGS+=(--cir-flatten-cfg)
     fi
     # Use direct CIR to LLVM path for proper vtable and constructor support
