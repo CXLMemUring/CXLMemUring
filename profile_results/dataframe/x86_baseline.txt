@@ -1,0 +1,6 @@
+Data generation/load time: 84.7954 secs
+-1.78224e-05, 4.6705, 4.19632e-05
+Number of rows after select: 5632204
+Calculation time: 0.20597 secs
+Selection time: 0.474446 secs
+Overall time: 85.4758 secs

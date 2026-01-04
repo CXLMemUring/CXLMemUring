@@ -1,0 +1,84 @@
+{
+  "profile_type": "dataframe_combined_baseline",
+  "version": "1.0",
+  "configuration": {
+    "clock_freq_mhz": 200.0,
+    "cxl_latency_ns": 165
+  },
+  "num_regions": 5,
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "data_generation",
+      "baseline_time_ms": 84795.4,
+      "host_independent_work_ns": 25438620000.0,
+      "vortex_time_ns": 16630.0,
+      "vortex_cycles": 3326,
+      "injection_delay_ns": 0,
+      "kernel_calls": 3,
+      "parallelizable": true,
+      "latency_hidden": true,
+      "optimal_prefetch_depth": 16
+    },
+    {
+      "region_id": 1,
+      "region_name": "mean_calculation",
+      "baseline_time_ms": 61.791,
+      "host_independent_work_ns": 18537300.0,
+      "vortex_time_ns": 3325.0,
+      "vortex_cycles": 665,
+      "injection_delay_ns": 0,
+      "kernel_calls": 1,
+      "parallelizable": true,
+      "latency_hidden": true,
+      "optimal_prefetch_depth": 16
+    },
+    {
+      "region_id": 2,
+      "region_name": "variance_calculation",
+      "baseline_time_ms": 61.791,
+      "host_independent_work_ns": 18537300.0,
+      "vortex_time_ns": 4985.0,
+      "vortex_cycles": 997,
+      "injection_delay_ns": 0,
+      "kernel_calls": 1,
+      "parallelizable": true,
+      "latency_hidden": true,
+      "optimal_prefetch_depth": 16
+    },
+    {
+      "region_id": 3,
+      "region_name": "correlation_calculation",
+      "baseline_time_ms": 82.388,
+      "host_independent_work_ns": 24716400.0,
+      "vortex_time_ns": 4985.0,
+      "vortex_cycles": 997,
+      "injection_delay_ns": 0,
+      "kernel_calls": 1,
+      "parallelizable": true,
+      "latency_hidden": true,
+      "optimal_prefetch_depth": 16
+    },
+    {
+      "region_id": 4,
+      "region_name": "selection",
+      "baseline_time_ms": 474.44599999999997,
+      "host_independent_work_ns": 142333799.99999997,
+      "vortex_time_ns": 3325.0,
+      "vortex_cycles": 665,
+      "injection_delay_ns": 0,
+      "kernel_calls": 1,
+      "parallelizable": true,
+      "latency_hidden": true,
+      "optimal_prefetch_depth": 16
+    }
+  ],
+  "summary": {
+    "total_time_ms": 85475.81599999999,
+    "data_generation_ms": 84795.4,
+    "calculation_ms": 205.97,
+    "selection_ms": 474.44599999999997,
+    "vortex_total_cycles": 6652,
+    "vortex_total_time_ns": 33260.0
+  }
+}

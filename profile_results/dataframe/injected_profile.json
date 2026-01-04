@@ -1,0 +1,70 @@
+{
+  "profile_type": "dataframe_injected",
+  "version": "1.0",
+  "timestamp": "2026-01-04T23:14:36.642365",
+  "baseline_profile": "/home/victoryang00/CXLMemUring/profile_results/dataframe/combined_baseline.json",
+  "configuration": {
+    "clock_freq_mhz": 200.0,
+    "cxl_latency_ns": 165
+  },
+  "timing_injection": {
+    "total_injected_delay_ms": 0.0,
+    "baseline_time_ms": 85475.81599999999,
+    "injected_time_ms": 85475.81599999999,
+    "slowdown_factor": 1.0
+  },
+  "regions": [
+    {
+      "region_id": 0,
+      "region_name": "data_generation",
+      "kernel_calls": 3,
+      "delay_per_call_ns": 0,
+      "total_delay_ms": 0.0,
+      "baseline_time_ms": 84795.4,
+      "injected_time_ms": 84795.4
+    },
+    {
+      "region_id": 1,
+      "region_name": "mean_calculation",
+      "kernel_calls": 1,
+      "delay_per_call_ns": 0,
+      "total_delay_ms": 0.0,
+      "baseline_time_ms": 61.791,
+      "injected_time_ms": 61.791
+    },
+    {
+      "region_id": 2,
+      "region_name": "variance_calculation",
+      "kernel_calls": 1,
+      "delay_per_call_ns": 0,
+      "total_delay_ms": 0.0,
+      "baseline_time_ms": 61.791,
+      "injected_time_ms": 61.791
+    },
+    {
+      "region_id": 3,
+      "region_name": "correlation_calculation",
+      "kernel_calls": 1,
+      "delay_per_call_ns": 0,
+      "total_delay_ms": 0.0,
+      "baseline_time_ms": 82.388,
+      "injected_time_ms": 82.388
+    },
+    {
+      "region_id": 4,
+      "region_name": "selection",
+      "kernel_calls": 1,
+      "delay_per_call_ns": 0,
+      "total_delay_ms": 0.0,
+      "baseline_time_ms": 474.44599999999997,
+      "injected_time_ms": 474.44599999999997
+    }
+  ],
+  "summary": {
+    "baseline_time_ms": 85475.81599999999,
+    "injected_time_ms": 85475.81599999999,
+    "total_injection_delay_ms": 0.0,
+    "slowdown_factor": 1.0,
+    "speedup_vs_baseline": 1.0
+  }
+}

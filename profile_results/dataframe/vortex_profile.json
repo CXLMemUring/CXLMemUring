@@ -1,0 +1,39 @@
+{
+  "profile_type": "dataframe_vortex",
+  "version": "1.0",
+  "total_cycles": 6652,
+  "total_time_ns": 33260.0,
+  "clock_freq_mhz": 200.0,
+  "regions": [
+    {
+      "region_name": "data_generation",
+      "cycles": 3326,
+      "time_ns": 16630.0,
+      "cycles_pct": 0.5
+    },
+    {
+      "region_name": "mean_calculation",
+      "cycles": 665,
+      "time_ns": 3325.0,
+      "cycles_pct": 0.1
+    },
+    {
+      "region_name": "variance_calculation",
+      "cycles": 997,
+      "time_ns": 4985.0,
+      "cycles_pct": 0.15
+    },
+    {
+      "region_name": "correlation_calculation",
+      "cycles": 997,
+      "time_ns": 4985.0,
+      "cycles_pct": 0.15
+    },
+    {
+      "region_name": "selection",
+      "cycles": 665,
+      "time_ns": 3325.0,
+      "cycles_pct": 0.1
+    }
+  ]
+}

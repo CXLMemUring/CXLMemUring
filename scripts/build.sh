@@ -306,7 +306,7 @@ case "${BENCHMARK_KEY}" in
     BENCHMARK_EXTRA_INCLUDES=("${REPO_ROOT}/bench/DataFrame/include")
     # DataFrame requires C++20 (set via CXX_STD) and exceptions/RTTI
     BENCHMARK_EXTRA_CXXFLAGS+=(-fexceptions -frtti)
-    BENCHMARK_EXTRA_LDFLAGS=(-lpthread)
+    BENCHMARK_EXTRA_LDFLAGS=(-lpthread -lm)
     if [[ "$(uname -s 2>/dev/null)" == "Linux" ]]; then
       BENCHMARK_EXTRA_LDFLAGS+=(-lrt)
     fi
@@ -380,7 +380,7 @@ append_flags_from_env "${BENCHMARK_ID}_EXTRA_CFLAGS" CFLAGS
 # Default C++ standard is C++17, but some benchmarks need C++20
 CXX_STD="${CXX_STD:-c++17}"
 if [[ "${BENCHMARK_ID}" == "DATAFRAME" ]]; then
-    CXX_STD="c++20"
+    CXX_STD="c++2b"
 fi
 CXXFLAGS=(-std=${CXX_STD} -fno-exceptions -fno-rtti)
 CXXFLAGS+=("${BENCHMARK_EXTRA_CXXFLAGS[@]}")
@@ -481,15 +481,16 @@ for src in "${SOURCES[@]}"; do
   #   continue
   # fi
 
-  # Workaround: Some llama.cpp files trigger CIR frontend hangs or crashes.
+  # Workaround: Some llama.cpp files trigger CIR frontend hangs or optimizer crashes.
   # Compile them natively for x86_64 and bypass the CIR/MLIR pipeline.
-  # - llama-arch.cpp: extremely large nested initializer lists
+  # - llama-arch.cpp: extremely large nested initializer lists (SROA crash)
   # - llama-batch.cpp: complex template instantiations causing CIR hang
   if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-arch.cpp || "${src}" == */llama-batch.cpp ) ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
     ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native compilation - large initializers/templates)"
     # Compile with optimizations fully disabled to avoid optimizer (SROA)
     # crashes on the enormous global initializer in this TU. Ensure -O0 and
     # -Xclang -disable-llvm-passes are applied after any inherited flags.
@@ -499,6 +500,40 @@ for src in "${SOURCES[@]}"; do
       -Xclang -disable-llvm-passes \
       -o "${obj}"
     # Skip CIR/MLIR for this file.
+    continue
+  fi
+
+  # Workaround: Files with std::regex cannot be lowered through CIR-to-LLVM
+  # because std::regex types cause UnrealizedConversionCast crashes.
+  # Compile these natively with full optimizations using system clang/g++.
+  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-grammar.cpp || "${src}" == */llama-model.cpp || "${src}" == */llama-quant.cpp || "${src}" == */llama-sampling.cpp || "${src}" == */unicode.cpp || "${src}" == */common.cpp || "${src}" == */json-schema-to-grammar.cpp || "${src}" == */arg.cpp ) ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native compilation - std::regex types unsupported in CIR)"
+    # Use system clang++ for native fallback (clangir's clang has optimizer bugs)
+    NATIVE_CXX="/usr/bin/clang++"
+    [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
+    "${NATIVE_CXX}" -c -fno-strict-aliasing \
+      "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O3 -o "${obj}"
+    continue
+  fi
+
+  # Workaround: DataFrame benchmark main file has extremely complex C++ templates
+  # that cause the CIR pipeline to hang. Compile natively.
+  if [[ "${BENCHMARK_ID}" == "DATAFRAME" && "${src}" == */dataframe_performance.cc ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native compilation - complex C++ templates)"
+    NATIVE_CXX="/usr/bin/clang++"
+    [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
+    "${NATIVE_CXX}" -c -fno-strict-aliasing \
+      "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O3 -o "${obj}"
     continue
   fi
 
