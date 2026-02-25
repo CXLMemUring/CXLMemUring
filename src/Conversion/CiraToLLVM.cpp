@@ -698,6 +698,179 @@ struct OffloadStartOpLowering : public ConversionPattern {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// CXL Type 2 Operation Lowerings (.cache and .mem protocols)
+//===----------------------------------------------------------------------===//
+
+/// Lower cira.type2.cache_load to runtime call cira_type2_cache_load
+struct Type2CacheLoadOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  Type2CacheLoadOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, Type2CacheLoadOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loadOp = cast<Type2CacheLoadOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto *converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    Type resultType = converter->convertType(loadOp.getType());
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto i64Type = IntegerType::get(ctx, 64);
+    auto i8Type = IntegerType::get(ctx, 8);
+
+    // Allocate stack slot for coherency state output
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+        rewriter.getI64IntegerAttr(1));
+    auto stateAlloca = rewriter.create<LLVM::AllocaOp>(loc, ptrType, i8Type, one);
+
+    // Call cira_type2_cache_load(controller, host_addr, size, &state)
+    auto cacheLoadFunc = FlatSymbolRefAttr::get(ctx, "cira_type2_cache_load");
+    auto result = rewriter.create<LLVM::CallOp>(
+        loc, ptrType, cacheLoadFunc,
+        ValueRange{operands[0], operands[0], operands[1], stateAlloca});
+
+    // For RISCV_VORTEX target, also emit speculative prefetch chain
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      auto prefetchFunc = FlatSymbolRefAttr::get(ctx, "__vortex_prefetch_chain");
+      auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+          rewriter.getI64IntegerAttr(0));
+      auto depth = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+          rewriter.getI64IntegerAttr(4));
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, prefetchFunc,
+          ValueRange{operands[0], offset, depth});
+    }
+
+    rewriter.replaceOp(op, result.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.type2.cache_store to runtime call cira_type2_cache_store
+struct Type2CacheStoreOpLowering : public ConversionPattern {
+  Type2CacheStoreOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, Type2CacheStoreOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto i64Type = IntegerType::get(ctx, 64);
+
+    // Store value to a temporary, then pass pointer to runtime
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+        rewriter.getI64IntegerAttr(1));
+    auto valAlloca = rewriter.create<LLVM::AllocaOp>(
+        loc, ptrType, operands[0].getType(), one);
+    rewriter.create<LLVM::StoreOp>(loc, operands[0], valAlloca);
+
+    // size = sizeof(element) — use constant matching the type
+    auto size = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+        rewriter.getI64IntegerAttr(8)); // default 8 bytes
+
+    // Call cira_type2_cache_store(controller, host_addr, data, size)
+    auto cacheStoreFunc = FlatSymbolRefAttr::get(ctx, "cira_type2_cache_store");
+    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, cacheStoreFunc,
+        ValueRange{operands[1], operands[1], valAlloca, size});
+
+    // Return null future
+    auto nullPtr = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+    rewriter.replaceOp(op, nullPtr.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.type2.mem_load to GEP + LLVM LoadOp with non-temporal hint
+struct Type2MemLoadOpLowering : public ConversionPattern {
+  Type2MemLoadOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, Type2MemLoadOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto memLoadOp = cast<Type2MemLoadOp>(op);
+    Location loc = op->getLoc();
+    auto *converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    Type resultType = converter->convertType(memLoadOp.getType());
+    if (!resultType)
+      return failure();
+
+    auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
+
+    // GEP: dev_ptr + offset
+    auto gep = rewriter.create<LLVM::GEPOp>(
+        loc, ptrType, resultType, operands[0], ValueRange{operands[1]});
+
+    // Non-temporal load for CXL.mem (device BAR4 mapped memory)
+    auto loadResult = rewriter.create<LLVM::LoadOp>(
+        loc, resultType, gep, /*alignment=*/0,
+        /*isVolatile=*/false, /*isNonTemporal=*/true);
+
+    rewriter.replaceOp(op, loadResult.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.type2.mem_store to GEP + LLVM StoreOp with non-temporal hint
+struct Type2MemStoreOpLowering : public ConversionPattern {
+  Type2MemStoreOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, Type2MemStoreOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
+
+    // GEP: dev_ptr + offset
+    auto gep = rewriter.create<LLVM::GEPOp>(
+        loc, ptrType, operands[0].getType(), operands[1],
+        ValueRange{operands[2]});
+
+    // Non-temporal store for CXL.mem (device BAR4 mapped memory)
+    rewriter.create<LLVM::StoreOp>(loc, operands[0], gep,
+                                    /*alignment=*/0,
+                                    /*isVolatile=*/false,
+                                    /*isNonTemporal=*/true);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.type2.drain to runtime call + memory fence
+struct Type2DrainOpLowering : public ConversionPattern {
+  Type2DrainOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, Type2DrainOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    // Call cira_type2_drain_delay_buffer(controller)
+    // Controller is obtained from global state; emit call with null (runtime resolves)
+    auto drainFunc = FlatSymbolRefAttr::get(ctx, "cira_type2_drain_delay_buffer");
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto nullCtrl = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, drainFunc,
+                                   ValueRange{nullCtrl});
+
+    // Full memory fence to ensure ordering
+    rewriter.create<LLVM::FenceOp>(loc, LLVM::AtomicOrdering::seq_cst);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 /// Lower cira.offload region - emit kernel or inline
 struct OffloadRegionOpLowering : public ConversionPattern {
   TargetArchitecture targetArch;
@@ -765,6 +938,13 @@ static void populateCiraToLLVMConversionPatternsImpl(
   // Control operation patterns
   patterns.add<OffloadStartOpLowering>(converter, arch);
   patterns.add<OffloadRegionOpLowering>(converter, arch);
+
+  // CXL Type 2 operation patterns
+  patterns.add<Type2CacheLoadOpLowering>(converter, arch);
+  patterns.add<Type2CacheStoreOpLowering>(converter);
+  patterns.add<Type2MemLoadOpLowering>(converter);
+  patterns.add<Type2MemStoreOpLowering>(converter);
+  patterns.add<Type2DrainOpLowering>(converter);
 
   // Legacy generic offload (renamed to offload_legacy)
   struct GenericOffloadOpLowering : public ConversionPattern {

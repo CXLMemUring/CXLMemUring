@@ -506,7 +506,7 @@ for src in "${SOURCES[@]}"; do
   # Workaround: Files with std::regex cannot be lowered through CIR-to-LLVM
   # because std::regex types cause UnrealizedConversionCast crashes.
   # Compile these natively with full optimizations using system clang/g++.
-  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-grammar.cpp || "${src}" == */llama-model.cpp || "${src}" == */llama-quant.cpp || "${src}" == */llama-sampling.cpp || "${src}" == */unicode.cpp || "${src}" == */common.cpp || "${src}" == */json-schema-to-grammar.cpp || "${src}" == */arg.cpp ) ]]; then
+  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-grammar.cpp || "${src}" == */llama-model.cpp || "${src}" == */llama-model-loader.cpp || "${src}" == */llama-model-saver.cpp || "${src}" == */llama-quant.cpp || "${src}" == */llama-sampling.cpp || "${src}" == */unicode.cpp || "${src}" == */common.cpp || "${src}" == */json-schema-to-grammar.cpp || "${src}" == */arg.cpp ) ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"

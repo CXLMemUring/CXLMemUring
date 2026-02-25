@@ -2,6 +2,10 @@
 #include <iostream>
 #include <unordered_map>
 #include <cstring>
+#include <ctime>
+#include <queue>
+#include <mutex>
+#include <algorithm>
 #include <sys/mman.h>
 
 #ifdef NUMA_SUPPORT
@@ -18,6 +22,7 @@ private:
     std::unique_ptr<RemoteMemoryManager> memory_manager_;
     std::unique_ptr<PrefetchController> prefetch_controller_;
     std::unique_ptr<GraphRuntime> graph_runtime_;
+    std::unique_ptr<Type2CacheController> type2_controller_;
     int verbosity_level_ = 0;
     bool profiling_enabled_ = false;
 
@@ -29,8 +34,10 @@ public:
     RemoteMemoryManager* getMemoryManager() override { return memory_manager_.get(); }
     PrefetchController* getPrefetchController() override { return prefetch_controller_.get(); }
     GraphRuntime* getGraphRuntime() override { return graph_runtime_.get(); }
+    Type2CacheController* getType2Controller() override { return type2_controller_.get(); }
 
     void configure(const std::string& config_file) override;
+    void configureType2(const Type2DeviceConfig& config) override;
     void setVerbosity(int level) override { verbosity_level_ = level; }
     void enableProfiling(bool enable) override { profiling_enabled_ = enable; }
 };
@@ -182,6 +189,21 @@ public:
                 addr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
                 break;
+
+            case MemoryTier::CXL_TYPE2_MEM:
+            case MemoryTier::CXL_TYPE2_CACHE:
+#ifdef NUMA_SUPPORT
+                // Type 2 device memory: try highest NUMA node (CXL device)
+                if (numa_available() != -1) {
+                    numa_node = numa_max_node();
+                    addr = numa_alloc_onnode(size, numa_node);
+                } else
+#endif
+                {
+                    addr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                }
+                break;
         }
 
         ref->base_addr = addr;
@@ -196,7 +218,9 @@ public:
         if (it != allocations_.end()) {
 #ifdef NUMA_SUPPORT
             if ((it->second.tier == MemoryTier::CXL_ATTACHED ||
-                 it->second.tier == MemoryTier::CXL_POOLED) &&
+                 it->second.tier == MemoryTier::CXL_POOLED ||
+                 it->second.tier == MemoryTier::CXL_TYPE2_MEM ||
+                 it->second.tier == MemoryTier::CXL_TYPE2_CACHE) &&
                 numa_available() != -1 && it->second.numa_node > 0) {
                 numa_free(it->second.addr, it->second.size);
 #else
@@ -260,6 +284,10 @@ public:
                 return 64UL * 1024 * 1024 * 1024; // 64GB
             case MemoryTier::FAR_MEMORY:
                 return 256UL * 1024 * 1024 * 1024; // 256GB
+            case MemoryTier::CXL_TYPE2_MEM:
+                return 4UL * 1024 * 1024 * 1024; // 4GB (BAR4 default)
+            case MemoryTier::CXL_TYPE2_CACHE:
+                return 128UL * 1024 * 1024; // 128MB (BAR2 default)
         }
         return 0;
     }
@@ -319,6 +347,336 @@ public:
     void setPrefetchDistance(size_t distance) override {
         prefetch_distance_ = distance;
     }
+};
+
+// Type 2 Cache Controller Implementation
+class Type2CacheControllerImpl : public Type2CacheController {
+private:
+    static constexpr size_t CXL_CACHE_LINE_SIZE = 64;
+
+    struct CacheLine {
+        uint8_t data[64];
+        CoherencyState state;
+        bool dirty;
+        uint64_t timestamp_ns;
+    };
+
+    enum class DelayOpType { READ, WRITE, COHERENCY };
+
+    struct DelayedOp {
+        uintptr_t addr;
+        std::vector<uint8_t> data;
+        DelayOpType op_type;
+        uint64_t enqueue_time_ns;
+        uint32_t delay_ns;
+    };
+
+    Type2DeviceConfig config_;
+    bool initialized_ = false;
+
+    // Cache structure: 64-byte aligned address -> CacheLine
+    std::unordered_map<uintptr_t, CacheLine> cache_;
+    std::mutex cache_mutex_;
+
+    // Delay buffer modeling IA-780i pipeline (DDR_IDLE→READ/WRITE→WAIT→IDLE)
+    std::queue<DelayedOp> delay_buffer_;
+    size_t delay_buffer_depth_ = 16;
+
+    // BAR mappings (mmap'd or NUMA-fallback)
+    void* bar2_mapping_ = nullptr;  // CXL.cache
+    void* bar4_mapping_ = nullptr;  // CXL.mem
+
+    // Statistics
+    size_t cache_hits_ = 0;
+    size_t cache_misses_ = 0;
+
+    static uint64_t now_ns() {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
+    }
+
+    uintptr_t alignToLine(void* addr) const {
+        return reinterpret_cast<uintptr_t>(addr) & ~(CXL_CACHE_LINE_SIZE - 1);
+    }
+
+    void processDelayBuffer() {
+        uint64_t current = now_ns();
+        while (!delay_buffer_.empty()) {
+            auto& front = delay_buffer_.front();
+            if (current - front.enqueue_time_ns >= front.delay_ns) {
+                delay_buffer_.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    void enqueueDelayedOp(uintptr_t addr, const void* data, size_t size,
+                          DelayOpType op_type, uint32_t delay_ns) {
+        // If buffer is full, drain oldest entry
+        if (delay_buffer_.size() >= delay_buffer_depth_) {
+            delay_buffer_.pop();
+        }
+        DelayedOp op;
+        op.addr = addr;
+        if (data && size > 0) {
+            op.data.assign(static_cast<const uint8_t*>(data),
+                           static_cast<const uint8_t*>(data) + size);
+        }
+        op.op_type = op_type;
+        op.enqueue_time_ns = now_ns();
+        op.delay_ns = delay_ns;
+        delay_buffer_.push(std::move(op));
+    }
+
+    bool mapDeviceBARs() {
+        // Try to mmap device BARs from sysfs
+        // Fallback to anonymous mmap for simulation
+        if (config_.bar2_size > 0) {
+            bar2_mapping_ = mmap(reinterpret_cast<void*>(config_.bar2_base),
+                                 config_.bar2_size,
+                                 PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (bar2_mapping_ == MAP_FAILED) {
+                bar2_mapping_ = nullptr;
+                return false;
+            }
+        }
+        if (config_.bar4_size > 0) {
+            bar4_mapping_ = mmap(reinterpret_cast<void*>(config_.bar4_base),
+                                 config_.bar4_size,
+                                 PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (bar4_mapping_ == MAP_FAILED) {
+                bar4_mapping_ = nullptr;
+                return false;
+            }
+        }
+        return true;
+    }
+
+public:
+    ~Type2CacheControllerImpl() override {
+        shutdown();
+    }
+
+    bool initialize(const Type2DeviceConfig& config) override {
+        if (initialized_) return true;
+
+        config_ = config;
+        if (config_.cache_line_size == 0)
+            config_.cache_line_size = CXL_CACHE_LINE_SIZE;
+        if (config_.delay_buffer_depth == 0)
+            config_.delay_buffer_depth = 16;
+        if (config_.read_latency_ns == 0)
+            config_.read_latency_ns = 170;
+        if (config_.write_latency_ns == 0)
+            config_.write_latency_ns = 200;
+        if (config_.coherency_latency_ns == 0)
+            config_.coherency_latency_ns = 50;
+
+        delay_buffer_depth_ = config_.delay_buffer_depth;
+
+        if (!mapDeviceBARs()) {
+            return false;
+        }
+
+        initialized_ = true;
+        return true;
+    }
+
+    void shutdown() override {
+        if (!initialized_) return;
+
+        drainDelayBuffer();
+
+        if (bar2_mapping_) {
+            munmap(bar2_mapping_, config_.bar2_size);
+            bar2_mapping_ = nullptr;
+        }
+        if (bar4_mapping_) {
+            munmap(bar4_mapping_, config_.bar4_size);
+            bar4_mapping_ = nullptr;
+        }
+        cache_.clear();
+        initialized_ = false;
+    }
+
+    // CXL.cache load: device coherently caches host memory
+    void* cacheLoad(void* host_addr, size_t size, CoherencyState* state_out) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        processDelayBuffer();
+
+        uintptr_t aligned = alignToLine(host_addr);
+
+        auto it = cache_.find(aligned);
+        if (it != cache_.end() && it->second.state != CoherencyState::INVALID) {
+            // Cache hit
+            cache_hits_++;
+            if (state_out) *state_out = it->second.state;
+            return it->second.data;
+        }
+
+        // Cache miss: fetch from host memory (or BAR2 mapping)
+        cache_misses_++;
+        CacheLine& line = cache_[aligned];
+        void* src = host_addr ? host_addr : bar2_mapping_;
+        if (src) {
+            memcpy(line.data, src, std::min(size, CXL_CACHE_LINE_SIZE));
+        } else {
+            memset(line.data, 0, CXL_CACHE_LINE_SIZE);
+        }
+        line.state = CoherencyState::SHARED;
+        line.dirty = false;
+        line.timestamp_ns = now_ns();
+
+        // Model read latency via delay buffer
+        enqueueDelayedOp(aligned, nullptr, 0, DelayOpType::READ,
+                         config_.read_latency_ns);
+
+        if (state_out) *state_out = line.state;
+        return line.data;
+    }
+
+    // CXL.cache store: requires EXCLUSIVE, marks MODIFIED
+    void cacheStore(void* host_addr, const void* data, size_t size) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        processDelayBuffer();
+
+        uintptr_t aligned = alignToLine(host_addr);
+
+        auto it = cache_.find(aligned);
+        if (it == cache_.end() || it->second.state == CoherencyState::INVALID) {
+            // Miss on store: allocate + fetch, then upgrade
+            CacheLine& line = cache_[aligned];
+            if (host_addr) {
+                memcpy(line.data, host_addr, CXL_CACHE_LINE_SIZE);
+            }
+            line.state = CoherencyState::EXCLUSIVE;
+            line.dirty = false;
+            line.timestamp_ns = now_ns();
+            cache_misses_++;
+            it = cache_.find(aligned);
+        }
+
+        CacheLine& line = it->second;
+
+        // Upgrade SHARED → EXCLUSIVE requires coherency overhead
+        if (line.state == CoherencyState::SHARED) {
+            enqueueDelayedOp(aligned, nullptr, 0, DelayOpType::COHERENCY,
+                             config_.coherency_latency_ns);
+            line.state = CoherencyState::EXCLUSIVE;
+        }
+
+        // Write data, transition to MODIFIED
+        size_t copy_size = std::min(size, CXL_CACHE_LINE_SIZE);
+        memcpy(line.data, data, copy_size);
+        line.state = CoherencyState::MODIFIED;
+        line.dirty = true;
+        line.timestamp_ns = now_ns();
+
+        enqueueDelayedOp(aligned, data, copy_size, DelayOpType::WRITE,
+                         config_.write_latency_ns);
+    }
+
+    void cacheEvict(void* host_addr, bool writeback) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        uintptr_t aligned = alignToLine(host_addr);
+
+        auto it = cache_.find(aligned);
+        if (it == cache_.end()) return;
+
+        CacheLine& line = it->second;
+
+        // Writeback dirty data to host
+        if (writeback && line.dirty && host_addr) {
+            memcpy(host_addr, line.data, CXL_CACHE_LINE_SIZE);
+        }
+
+        line.state = CoherencyState::INVALID;
+        line.dirty = false;
+    }
+
+    CoherencyState getCoherencyState(void* addr) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        uintptr_t aligned = alignToLine(addr);
+        auto it = cache_.find(aligned);
+        if (it == cache_.end()) return CoherencyState::INVALID;
+        return it->second.state;
+    }
+
+    // CXL.mem: host accesses device-attached memory (BAR4/HDM)
+    void* memLoad(uintptr_t dev_offset, size_t size) override {
+        if (bar4_mapping_ && dev_offset + size <= config_.bar4_size) {
+            return static_cast<char*>(bar4_mapping_) + dev_offset;
+        }
+        // Fallback: allocate anonymous memory
+        void* fallback = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        return fallback;
+    }
+
+    void memStore(uintptr_t dev_offset, const void* data, size_t size) override {
+        if (bar4_mapping_ && dev_offset + size <= config_.bar4_size) {
+            memcpy(static_cast<char*>(bar4_mapping_) + dev_offset, data, size);
+        }
+    }
+
+    void setDelayBufferDepth(size_t depth) override {
+        delay_buffer_depth_ = depth;
+    }
+
+    void drainDelayBuffer() override {
+        while (!delay_buffer_.empty()) {
+            delay_buffer_.pop();
+        }
+    }
+
+    // Snoop handler: downgrade state per MESI protocol
+    void handleSnoop(void* addr, CoherencyState new_state) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        uintptr_t aligned = alignToLine(addr);
+        auto it = cache_.find(aligned);
+        if (it == cache_.end()) return;
+
+        CacheLine& line = it->second;
+
+        // MODIFIED → writeback + new_state
+        if (line.state == CoherencyState::MODIFIED && line.dirty) {
+            if (addr) {
+                memcpy(addr, line.data, CXL_CACHE_LINE_SIZE);
+            }
+            line.dirty = false;
+        }
+
+        line.state = new_state;
+        if (new_state == CoherencyState::INVALID) {
+            line.dirty = false;
+        }
+    }
+
+    void invalidateRange(void* base, size_t size) override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        uintptr_t start = reinterpret_cast<uintptr_t>(base) & ~(CXL_CACHE_LINE_SIZE - 1);
+        uintptr_t end = reinterpret_cast<uintptr_t>(base) + size;
+
+        for (uintptr_t addr = start; addr < end; addr += CXL_CACHE_LINE_SIZE) {
+            auto it = cache_.find(addr);
+            if (it != cache_.end()) {
+                // Writeback dirty lines before invalidation
+                if (it->second.dirty && it->second.state == CoherencyState::MODIFIED) {
+                    memcpy(reinterpret_cast<void*>(addr), it->second.data,
+                           CXL_CACHE_LINE_SIZE);
+                }
+                it->second.state = CoherencyState::INVALID;
+                it->second.dirty = false;
+            }
+        }
+    }
+
+    size_t getCacheHits() override { return cache_hits_; }
+    size_t getCacheMisses() override { return cache_misses_; }
 };
 
 // Graph Runtime Implementation
@@ -410,6 +768,7 @@ CiraRuntimeImpl::CiraRuntimeImpl() {
     memory_manager_ = std::make_unique<RemoteMemoryManagerImpl>();
     prefetch_controller_ = std::make_unique<PrefetchControllerImpl>();
     graph_runtime_ = std::make_unique<GraphRuntimeImpl>();
+    type2_controller_ = std::make_unique<Type2CacheControllerImpl>();
 }
 
 void CiraRuntimeImpl::configure(const std::string& config_file) {
@@ -418,6 +777,13 @@ void CiraRuntimeImpl::configure(const std::string& config_file) {
     if (verbosity_level_ > 0) {
         std::cout << "Loading configuration from: " << config_file << std::endl;
     }
+}
+
+void CiraRuntimeImpl::configureType2(const Type2DeviceConfig& config) {
+    if (verbosity_level_ > 0) {
+        std::cout << "Configuring Type 2 device: " << config.device_path << std::endl;
+    }
+    type2_controller_->initialize(config);
 }
 
 // Factory method
@@ -458,6 +824,77 @@ extern "C" {
         auto* eng = static_cast<OffloadEngine*>(engine);
         auto* ref = static_cast<RemoteMemRef*>(edge_ptr);
         eng->evictEdge(ref, index);
+    }
+
+    // Type 2 C API implementations
+    void cira_type2_configure(void* runtime, const char* device_path,
+                              uint64_t bar2_base, uint64_t bar2_size,
+                              uint64_t bar4_base, uint64_t bar4_size) {
+        auto* rt = static_cast<CiraRuntime*>(runtime);
+        Type2DeviceConfig config;
+        config.device_path = device_path ? device_path : "";
+        config.bar2_base = static_cast<uintptr_t>(bar2_base);
+        config.bar2_size = static_cast<size_t>(bar2_size);
+        config.bar4_base = static_cast<uintptr_t>(bar4_base);
+        config.bar4_size = static_cast<size_t>(bar4_size);
+        config.read_latency_ns = 170;
+        config.write_latency_ns = 200;
+        config.coherency_latency_ns = 50;
+        config.cache_line_size = 64;
+        config.delay_buffer_depth = 16;
+        rt->configureType2(config);
+    }
+
+    void cira_type2_set_delay(void* runtime, uint32_t read_ns,
+                              uint32_t write_ns, uint32_t coherency_ns) {
+        auto* rt = static_cast<CiraRuntime*>(runtime);
+        Type2DeviceConfig config;
+        config.read_latency_ns = read_ns;
+        config.write_latency_ns = write_ns;
+        config.coherency_latency_ns = coherency_ns;
+        config.cache_line_size = 64;
+        config.delay_buffer_depth = 16;
+        rt->configureType2(config);
+    }
+
+    void* cira_type2_cache_load(void* controller, void* host_addr,
+                                uint64_t size, uint8_t* coherency_state) {
+        auto* ctrl = static_cast<Type2CacheController*>(controller);
+        CoherencyState state;
+        void* result = ctrl->cacheLoad(host_addr, static_cast<size_t>(size), &state);
+        if (coherency_state) {
+            *coherency_state = static_cast<uint8_t>(state);
+        }
+        return result;
+    }
+
+    void cira_type2_cache_store(void* controller, void* host_addr,
+                                const void* data, uint64_t size) {
+        auto* ctrl = static_cast<Type2CacheController*>(controller);
+        ctrl->cacheStore(host_addr, data, static_cast<size_t>(size));
+    }
+
+    void cira_type2_cache_evict(void* controller, void* host_addr, int writeback) {
+        auto* ctrl = static_cast<Type2CacheController*>(controller);
+        ctrl->cacheEvict(host_addr, writeback != 0);
+    }
+
+    void* cira_type2_mem_load(void* controller, uint64_t dev_offset, uint64_t size) {
+        auto* ctrl = static_cast<Type2CacheController*>(controller);
+        return ctrl->memLoad(static_cast<uintptr_t>(dev_offset),
+                             static_cast<size_t>(size));
+    }
+
+    void cira_type2_mem_store(void* controller, uint64_t dev_offset,
+                              const void* data, uint64_t size) {
+        auto* ctrl = static_cast<Type2CacheController*>(controller);
+        ctrl->memStore(static_cast<uintptr_t>(dev_offset), data,
+                       static_cast<size_t>(size));
+    }
+
+    void cira_type2_drain_delay_buffer(void* controller) {
+        auto* ctrl = static_cast<Type2CacheController*>(controller);
+        ctrl->drainDelayBuffer();
     }
 }
 

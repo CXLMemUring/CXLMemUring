@@ -492,6 +492,124 @@ def YieldOp : RemoteMem_Op<"yield", [Pure, Terminator,
 }
 
 //===----------------------------------------------------------------------===//
+// CXL Type 2 Operations (.cache and .mem protocols)
+//===----------------------------------------------------------------------===//
+
+// Load through CXL.cache protocol (device coherently caching host memory)
+def Type2CacheLoadOp : RemoteMem_Op<"type2.cache_load", [MemoryEffects<[MemRead]>]> {
+  let summary = "Load data through CXL Type 2 .cache protocol";
+  let description = [{
+    Loads data from host memory through the CXL Type 2 device's .cache protocol.
+    The device coherently caches the host memory line. Returns a future
+    representing the in-flight load, modeling the IA-780i pipeline delay.
+
+    Example:
+    ```mlir
+    %fut = cira.type2.cache_load %host_ptr, %size delay = 170
+        : !cira.handle<f32> -> !cira.future<f32>
+    ```
+  }];
+
+  let arguments = (ins AnyCiraHandle:$host_ptr,
+                       Index:$size,
+                       OptionalAttr<I64Attr>:$delay_ns);
+  let results = (outs AnyCiraFuture:$future);
+
+  let assemblyFormat = [{
+    $host_ptr `,` $size (`delay` `=` $delay_ns^)? attr-dict `:` type($host_ptr) `->` type($future)
+  }];
+}
+
+// Store through CXL.cache protocol
+def Type2CacheStoreOp : RemoteMem_Op<"type2.cache_store", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Store data through CXL Type 2 .cache protocol";
+  let description = [{
+    Stores data to host memory through the CXL Type 2 device's .cache protocol.
+    Requires EXCLUSIVE coherency state (upgrades from SHARED with invalidation).
+    Models write latency + coherency overhead from IA-780i pipeline.
+
+    Example:
+    ```mlir
+    %fut = cira.type2.cache_store %val, %host_ptr delay = 200
+        : f32, !cira.handle<f32> -> !cira.future<none>
+    ```
+  }];
+
+  let arguments = (ins AnyType:$value,
+                       AnyCiraHandle:$host_ptr,
+                       OptionalAttr<I64Attr>:$delay_ns);
+  let results = (outs AnyCiraFuture:$future);
+
+  let assemblyFormat = [{
+    $value `,` $host_ptr (`delay` `=` $delay_ns^)? attr-dict `:` type($value) `,` type($host_ptr) `->` type($future)
+  }];
+}
+
+// Load from device-attached memory via CXL.mem (HDM)
+def Type2MemLoadOp : RemoteMem_Op<"type2.mem_load", [MemoryEffects<[MemRead]>]> {
+  let summary = "Load from CXL Type 2 device-attached memory";
+  let description = [{
+    Loads data from the CXL Type 2 device's DDR4 memory via the CXL.mem (HDM)
+    protocol through BAR4. No coherency tracking needed (host-managed).
+
+    Example:
+    ```mlir
+    %val = cira.type2.mem_load %dev_ptr[%offset], %size
+        : !cira.handle<f32> -> f32
+    ```
+  }];
+
+  let arguments = (ins AnyCiraHandle:$dev_ptr,
+                       Index:$offset,
+                       Index:$size);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat = [{
+    $dev_ptr `[` $offset `]` `,` $size attr-dict `:` type($dev_ptr) `->` type($result)
+  }];
+}
+
+// Store to device-attached memory via CXL.mem
+def Type2MemStoreOp : RemoteMem_Op<"type2.mem_store", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Store to CXL Type 2 device-attached memory";
+  let description = [{
+    Stores data to the CXL Type 2 device's DDR4 memory via the CXL.mem (HDM)
+    protocol through BAR4. No coherency tracking needed (host-managed).
+
+    Example:
+    ```mlir
+    cira.type2.mem_store %val, %dev_ptr[%offset]
+        : f32, !cira.handle<f32>
+    ```
+  }];
+
+  let arguments = (ins AnyType:$value,
+                       AnyCiraHandle:$dev_ptr,
+                       Index:$offset);
+
+  let assemblyFormat = [{
+    $value `,` $dev_ptr `[` $offset `]` attr-dict `:` type($value) `,` type($dev_ptr)
+  }];
+}
+
+// Drain Type 2 delay buffer (pipeline flush)
+def Type2DrainOp : RemoteMem_Op<"type2.drain", []> {
+  let summary = "Drain the Type 2 delay buffer pipeline";
+  let description = [{
+    Drains all pending operations in the CXL Type 2 delay buffer,
+    ensuring all in-flight CXL.cache and CXL.mem operations complete.
+    Maps to the IA-780i DDR_IDLE state transition from WAIT state.
+
+    Example:
+    ```mlir
+    cira.type2.drain
+    ```
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // Legacy Operations (for backward compatibility)
 //===----------------------------------------------------------------------===//
 
