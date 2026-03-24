@@ -16,3 +16,15 @@
 [submodule "bench/llama.cpp"]
 	path = bench/llama.cpp
 	url = https://github.com/CXLMemUring/llama.cpp
+[submodule "bench/npb"]
+	path = bench/npb
+	url = https://github.com/LLNL/NPB
+[submodule "bench/partitioned-hash-join"]
+	path = bench/partitioned-hash-join
+	url = https://github.com/themisvaltinos/Partitioned-Hash-Join
+[submodule "bench/spatter"]
+	path = bench/spatter
+	url = https://github.com/hpcgarage/spatter
+[submodule "bench/ume"]
+	path = bench/ume
+	url = https://github.com/lanl/UME

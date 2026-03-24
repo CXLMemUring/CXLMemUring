@@ -6,6 +6,7 @@
 #include <vector>
 #include <map>
 #include <cstring>
+#include <cinttypes>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -22,6 +23,11 @@ typedef void* vx_buffer_h;
 #define VX_CAPS_CACHE_LINE_SIZE 0x4
 #define VX_CAPS_GLOBAL_MEM_SIZE 0x5
 #define VX_CAPS_LOCAL_MEM_SIZE 0x6
+#define VX_CAPS_ISA_FLAGS 0x7
+#define VX_MEM_READ_WRITE 0x3
+#define VX_MEM_READ 0x1
+#define VX_MEM_WRITE 0x2
+#define VX_MAX_TIMEOUT 0xFFFFFFFFULL
 static inline int vx_dev_open(vx_device_h*) { return -1; }
 static inline int vx_dev_close(vx_device_h) { return 0; }
 static inline int vx_dev_caps(vx_device_h, uint32_t, uint64_t*) { return -1; }
@@ -33,6 +39,8 @@ static inline int vx_copy_from_dev(void*, vx_buffer_h, uint64_t, uint64_t) { ret
 static inline int vx_start(vx_device_h, vx_buffer_h, vx_buffer_h) { return -1; }
 static inline int vx_ready_wait(vx_device_h, uint64_t) { return -1; }
 static inline int vx_upload_kernel_file(vx_device_h, const char*, vx_buffer_h*) { return -1; }
+static inline int vx_upload_kernel_bytes(vx_device_h, const void*, uint32_t, vx_buffer_h*) { return -1; }
+static inline int vx_dump_perf(vx_device_h, FILE*) { return 0; }
 #endif
 
 // Internal device structure
@@ -486,7 +494,15 @@ int vortex_device_dump_perf(vortex_device_h device, const char* output_path) {
         if (!f) return VORTEX_ERROR_INVALID;
     }
 
-    vx_dump_perf(device->vx_dev, f);
+    // Stub implementation: print basic performance info
+    fprintf(f, "=== Vortex Performance Counters ===\n");
+    fprintf(f, "Device: %p\n", device->vx_dev);
+    fprintf(f, "Note: Full performance counters require Vortex SDK\n");
+
+    // Print any cached counters we have
+    for (const auto& counter : device->perf_counters) {
+        fprintf(f, "%s: %" PRIu64 "\n", counter.first.c_str(), counter.second);
+    }
 
     if (output_path) {
         fclose(f);
