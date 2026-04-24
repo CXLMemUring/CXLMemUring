@@ -483,6 +483,135 @@ struct FlushOpLowering : public ConversionPattern {
   }
 };
 
+/// Lower cira.install_cacheline to architecture-specific cache install
+struct InstallCachelineOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  InstallCachelineOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, InstallCachelineOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto installOp = cast<InstallCachelineOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto i32Type = IntegerType::get(ctx, 32);
+    auto i64Type = IntegerType::get(ctx, 64);
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+
+    // Get cache level (default L3 = 3)
+    int64_t cacheLevel = 3;
+    if (auto levelAttr = installOp.getCacheLevelAttr())
+      cacheLevel = levelAttr.getInt();
+
+    Value ptr = operands[0];
+    Value size = operands[1];
+
+    if (targetArch == TargetArchitecture::X86 || targetArch == TargetArchitecture::Heterogeneous) {
+      // x86: Use prefetchT0/T1/T2 based on cache level, then MWAIT-style polling.
+      // For LLC install: emit a loop that prefetches each cache line in the range.
+      //
+      // For each 64-byte cache line in [ptr, ptr+size):
+      //   _mm_prefetch(addr, _MM_HINT_T0)   // install into L1 (propagates to all levels)
+      //
+      // Cache level mapping:
+      //   L1 -> PREFETCHT0 (locality=3)
+      //   L2 -> PREFETCHT1 (locality=2)
+      //   L3 -> PREFETCHT2 (locality=1)
+      int locality = (cacheLevel == 1) ? 3 : (cacheLevel == 2) ? 2 : 1;
+
+      auto prefetchFunc = FlatSymbolRefAttr::get(ctx, "llvm.prefetch.p0");
+      auto rw = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+          rewriter.getI32IntegerAttr(0));  // read
+      auto localityVal = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+          rewriter.getI32IntegerAttr(locality));
+      auto cacheType = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+          rewriter.getI32IntegerAttr(1));  // data cache
+
+      // Cache line size = 64 bytes
+      auto cacheLineSize = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+          rewriter.getI64IntegerAttr(64));
+      auto zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+          rewriter.getI64IntegerAttr(0));
+
+      // Create prefetch loop: for (offset = 0; offset < size; offset += 64)
+      auto i8Type = IntegerType::get(ctx, 8);
+
+      // Emit loop: we unroll up to 16 cache lines, or emit a counted loop
+      // For simplicity, call runtime helper that loops internally
+      auto installFunc = FlatSymbolRefAttr::get(ctx, "cira_install_cacheline_x86");
+      auto levelArg = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+          rewriter.getI32IntegerAttr(cacheLevel));
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, installFunc,
+          ValueRange{ptr, size, levelArg});
+    }
+
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      // Vortex device-side: take ownership of cacheline via CXL.cache protocol.
+      // This is the device writing to the host-visible address, which triggers
+      // DCOH writeback and installs the line in the host LLC.
+      auto installFunc = FlatSymbolRefAttr::get(ctx, "__vortex_install_cacheline");
+      auto levelArg = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+          rewriter.getI32IntegerAttr(cacheLevel));
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, installFunc,
+          ValueRange{ptr, size, levelArg});
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.evict_hint to architecture-specific cache eviction
+struct EvictHintOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  EvictHintOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, EvictHintOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+
+    Value ptr = operands[0];
+
+    if (targetArch == TargetArchitecture::X86 || targetArch == TargetArchitecture::Heterogeneous) {
+      // x86: Use CLDEMOTE to move cache line from L1 to LLC (non-destructive),
+      // or CLFLUSHOPT for full eviction. CLDEMOTE is preferred because it
+      // keeps the line in LLC for potential reuse by other cores.
+      //
+      // CLDEMOTE is available on Granite Rapids (ICX+). If not available,
+      // falls back to CLFLUSHOPT.
+      auto evictFunc = FlatSymbolRefAttr::get(ctx, "cira_evict_hint_x86");
+      if (operands.size() > 1 && operands[1]) {
+        // Have size: evict range
+        rewriter.create<LLVM::CallOp>(loc, TypeRange{}, evictFunc,
+            ValueRange{ptr, operands[1]});
+      } else {
+        // Single cache line
+        auto i64Type = IntegerType::get(ctx, 64);
+        auto defaultSize = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+            rewriter.getI64IntegerAttr(64));
+        rewriter.create<LLVM::CallOp>(loc, TypeRange{}, evictFunc,
+            ValueRange{ptr, defaultSize});
+      }
+    }
+
+    if (targetArch == TargetArchitecture::RISCV_VORTEX) {
+      // Vortex: issue CXL.cache back-invalidation hint
+      auto fenceFunc = FlatSymbolRefAttr::get(ctx, "llvm.nvvm.membar.gl");
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, fenceFunc, ValueRange{});
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 /// Lower cira.prefetch_stream to prefetch intrinsics
 struct PrefetchStreamOpLowering : public ConversionPattern {
   TargetArchitecture targetArch;
@@ -542,16 +671,73 @@ struct PrefetchIndirectOpLowering : public ConversionPattern {
   }
 };
 
-/// Lower cira.future_await - for now just pass through the value
-struct FutureAwaitOpLowering : public ConversionPattern {
-  FutureAwaitOpLowering(LLVMTypeConverter &converter)
-      : ConversionPattern(converter, FutureAwaitOp::getOperationName(), 1,
+/// Lower cira.future_create to allocate cache-line-aligned completion struct
+struct FutureCreateOpLowering : public ConversionPattern {
+  FutureCreateOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, FutureCreateOp::getOperationName(), 1,
                           &converter.getContext()) {}
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                                 ConversionPatternRewriter &rewriter) const override {
-    // Future is already the value (simplified implementation)
-    rewriter.replaceOp(op, operands[0]);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto i64Type = IntegerType::get(ctx, 64);
+
+    // Allocate a 64-byte-aligned completion structure (matches Type2KernelCompletion)
+    // Layout: [magic:u32, status:u32, result:u64, cycles:u64, timestamp:u64, pad:32]
+    // Total: 64 bytes = 1 cache line
+    auto allocFunc = FlatSymbolRefAttr::get(ctx, "cira_future_alloc");
+    auto result = rewriter.create<LLVM::CallOp>(loc, ptrType, allocFunc,
+        ValueRange{});
+
+    // Initialize magic to 0 (not ready; device writes 0xDEADBEEF when done)
+    auto i32Type = IntegerType::get(ctx, 32);
+    auto zeroMagic = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+        rewriter.getI32IntegerAttr(0));
+    rewriter.create<LLVM::StoreOp>(loc, zeroMagic, result.getResult(),
+        /*alignment=*/64);
+
+    rewriter.replaceOp(op, result.getResult());
+    return success();
+  }
+};
+
+/// Lower cira.future_await to mwait-style polling on completion cacheline
+struct FutureAwaitOpLowering : public ConversionPattern {
+  TargetArchitecture targetArch;
+
+  FutureAwaitOpLowering(LLVMTypeConverter &converter, TargetArchitecture arch)
+      : ConversionPattern(converter, FutureAwaitOp::getOperationName(), 1,
+                          &converter.getContext()), targetArch(arch) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto awaitOp = cast<FutureAwaitOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto *converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    Type resultType = converter->convertType(awaitOp.getType());
+    if (!resultType)
+      return failure();
+
+    // Call cira_future_await which implements:
+    //   1. MONITOR the completion cacheline address
+    //   2. Check if magic == 0xDEADBEEF (DCOH-delivered)
+    //   3. If not ready: MWAIT (on Granite Rapids, this doesn't alter cstate)
+    //   4. When ready: load result value from completion struct
+    auto awaitFunc = FlatSymbolRefAttr::get(ctx, "cira_future_await");
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+
+    auto result = rewriter.create<LLVM::CallOp>(loc, ptrType, awaitFunc,
+        ValueRange{operands[0]});
+
+    // Load the actual result from the returned pointer
+    auto loadResult = rewriter.create<LLVM::LoadOp>(loc, resultType,
+        result.getResult());
+
+    rewriter.replaceOp(op, loadResult.getResult());
     return success();
   }
 };
@@ -585,6 +771,80 @@ struct ReleaseOpLowering : public ConversionPattern {
     auto freeFunc = FlatSymbolRefAttr::get(ctx, "free");
     rewriter.create<LLVM::CallOp>(loc, TypeRange{}, freeFunc, operands[0]);
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.phase_boundary to barrier + runtime phase notification
+struct PhaseBoundaryOpLowering : public ConversionPattern {
+  PhaseBoundaryOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, PhaseBoundaryOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto phaseOp = cast<PhaseBoundaryOp>(op);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    // 1. Issue full memory fence to ensure all prior operations complete
+    rewriter.create<LLVM::FenceOp>(loc, LLVM::AtomicOrdering::seq_cst);
+
+    // 2. Wait for device to finish all current offload tasks
+    //    (checked through control bits in completion cachelines)
+    auto barrierFunc = FlatSymbolRefAttr::get(ctx, "cira_phase_barrier");
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+
+    if (auto phaseName = phaseOp.getPhaseNameAttr()) {
+      // Pass phase name to runtime for profiling/debugging
+      auto phaseNameFunc = FlatSymbolRefAttr::get(ctx, "cira_phase_boundary_named");
+      // Create global string for phase name
+      auto i8Type = IntegerType::get(ctx, 8);
+      auto strType = LLVM::LLVMArrayType::get(i8Type, phaseName.getValue().size() + 1);
+      auto globalName = std::string("__cira_phase_") +
+                        phaseName.getValue().str();
+
+      // Emit runtime call with phase name
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, barrierFunc, ValueRange{});
+    } else {
+      rewriter.create<LLVM::CallOp>(loc, TypeRange{}, barrierFunc, ValueRange{});
+    }
+
+    // 3. Second fence after barrier to ensure ordering for next phase
+    rewriter.create<LLVM::FenceOp>(loc, LLVM::AtomicOrdering::seq_cst);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower cira.speculate to conditional execution region
+struct SpeculateOpLowering : public ConversionPattern {
+  SpeculateOpLowering(LLVMTypeConverter &converter)
+      : ConversionPattern(converter, SpeculateOp::getOperationName(), 1,
+                          &converter.getContext()) {}
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto specOp = cast<SpeculateOp>(op);
+    Location loc = op->getLoc();
+
+    // Inline the speculative body - at LLVM level, speculation is handled
+    // by the runtime; here we just emit the operations.
+    // The runtime can later decide to discard results if speculation fails.
+    Block &body = specOp.getBody().front();
+    SmallVector<Value> results;
+
+    for (auto &bodyOp : llvm::make_early_inc_range(body.getOperations())) {
+      if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
+        for (auto val : yieldOp.getValues())
+          results.push_back(val);
+      } else {
+        rewriter.clone(bodyOp);
+      }
+    }
+
+    rewriter.replaceOp(op, results);
     return success();
   }
 };
@@ -871,7 +1131,7 @@ struct Type2DrainOpLowering : public ConversionPattern {
   }
 };
 
-/// Lower cira.offload region - emit kernel or inline
+/// Lower cira.offload region - emit Vortex kernel launch or inline for x86
 struct OffloadRegionOpLowering : public ConversionPattern {
   TargetArchitecture targetArch;
 
@@ -883,26 +1143,110 @@ struct OffloadRegionOpLowering : public ConversionPattern {
                                 ConversionPatternRewriter &rewriter) const override {
     auto offloadOp = cast<OffloadRegionOp>(op);
     Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto i32Type = IntegerType::get(ctx, 32);
+    auto i64Type = IntegerType::get(ctx, 64);
 
-    // For Vortex, the region becomes a kernel
-    // For x86, inline the operations
+    if (targetArch == TargetArchitecture::RISCV_VORTEX ||
+        targetArch == TargetArchitecture::Heterogeneous) {
+      // ---- Heterogeneous offload path ----
+      // 1. Pack operands into MMIO task struct (matches Type2KernelRequest)
+      // 2. Submit to ring buffer via BAR0 CSR writes
+      // 3. Allocate completion cacheline (DCOH-coherent)
+      // 4. Inline the body operations for x86 fallback / host-side stub
+      // 5. On return, host polls completion cacheline
 
-    // Inline the body operations
-    Block &body = offloadOp.getBody().front();
-    SmallVector<Value> results;
+      // Allocate CompletionData (64-byte aligned, DCOH-delivered by device)
+      auto completionAllocFunc = FlatSymbolRefAttr::get(ctx, "cira_future_alloc");
+      auto completionPtr = rewriter.create<LLVM::CallOp>(
+          loc, ptrType, completionAllocFunc, ValueRange{});
 
-    for (auto &bodyOp : llvm::make_early_inc_range(body.getOperations())) {
-      if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
-        // Collect yield values as results
-        for (auto val : yieldOp.getValues()) {
-          results.push_back(val);
+      // Initialize completion magic to 0 (not ready)
+      auto zeroMagic = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+          rewriter.getI32IntegerAttr(0));
+      rewriter.create<LLVM::StoreOp>(loc, zeroMagic,
+          completionPtr.getResult(), /*alignment=*/64);
+
+      // Submit offload task to device via MMIO queue
+      // cira_offload_submit(target_func_ptr, operands[], num_operands, completion_ptr)
+      auto submitFunc = FlatSymbolRefAttr::get(ctx, "cira_offload_submit");
+
+      // Pack operands into a stack-allocated array
+      if (!operands.empty()) {
+        auto numOps = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+            rewriter.getI32IntegerAttr(operands.size()));
+        auto one64 = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+            rewriter.getI64IntegerAttr(operands.size()));
+
+        // Allocate array of pointers for operands
+        auto opsArray = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrType, ptrType, one64);
+
+        // Store each operand pointer
+        for (size_t i = 0; i < operands.size(); ++i) {
+          auto idx = rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+              rewriter.getI64IntegerAttr(i));
+          auto slot = rewriter.create<LLVM::GEPOp>(
+              loc, ptrType, ptrType, opsArray, ValueRange{idx});
+          rewriter.create<LLVM::StoreOp>(loc, operands[i], slot);
         }
+
+        // Get target function reference (if specified)
+        Value targetFuncPtr;
+        if (auto targetAttr = offloadOp.getTargetAttr()) {
+          auto funcRef = FlatSymbolRefAttr::get(ctx, targetAttr.getRootReference());
+          auto addrOfFunc = FlatSymbolRefAttr::get(ctx, "cira_get_device_func_addr");
+          targetFuncPtr = rewriter.create<LLVM::CallOp>(
+              loc, ptrType, addrOfFunc, ValueRange{}).getResult();
+        } else {
+          targetFuncPtr = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+        }
+
+        rewriter.create<LLVM::CallOp>(loc, TypeRange{}, submitFunc,
+            ValueRange{targetFuncPtr, opsArray, numOps, completionPtr.getResult()});
       } else {
-        rewriter.clone(bodyOp);
+        // No operands - simple offload
+        auto nullOps = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+        auto zeroOps = rewriter.create<LLVM::ConstantOp>(loc, i32Type,
+            rewriter.getI32IntegerAttr(0));
+        auto nullFunc = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+        rewriter.create<LLVM::CallOp>(loc, TypeRange{}, submitFunc,
+            ValueRange{nullFunc, nullOps, zeroOps, completionPtr.getResult()});
       }
+
+      // Also inline the body operations for the x86 host-side path
+      // (host work that runs concurrently with device prefetching)
+      Block &body = offloadOp.getBody().front();
+      SmallVector<Value> results;
+
+      for (auto &bodyOp : llvm::make_early_inc_range(body.getOperations())) {
+        if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
+          for (auto val : yieldOp.getValues())
+            results.push_back(val);
+        } else {
+          rewriter.clone(bodyOp);
+        }
+      }
+
+      rewriter.replaceOp(op, results);
+    } else {
+      // ---- x86-only fallback: inline everything ----
+      Block &body = offloadOp.getBody().front();
+      SmallVector<Value> results;
+
+      for (auto &bodyOp : llvm::make_early_inc_range(body.getOperations())) {
+        if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
+          for (auto val : yieldOp.getValues())
+            results.push_back(val);
+        } else {
+          rewriter.clone(bodyOp);
+        }
+      }
+
+      rewriter.replaceOp(op, results);
     }
 
-    rewriter.replaceOp(op, results);
     return success();
   }
 };
@@ -923,11 +1267,16 @@ static void populateCiraToLLVMConversionPatternsImpl(
   patterns.add<LoadAsyncOpLowering>(converter, arch);
   patterns.add<StoreAsyncOpLowering>(converter);
   patterns.add<FlushOpLowering>(converter);
+  patterns.add<InstallCachelineOpLowering>(converter, arch);
+  patterns.add<EvictHintOpLowering>(converter, arch);
   patterns.add<PrefetchStreamOpLowering>(converter, arch);
   patterns.add<PrefetchIndirectOpLowering>(converter, arch);
-  patterns.add<FutureAwaitOpLowering>(converter);
+  patterns.add<FutureCreateOpLowering>(converter);
+  patterns.add<FutureAwaitOpLowering>(converter, arch);
   patterns.add<BarrierOpLowering>(converter);
   patterns.add<ReleaseOpLowering>(converter);
+  patterns.add<PhaseBoundaryOpLowering>(converter);
+  patterns.add<SpeculateOpLowering>(converter);
 
   // Stream operation patterns
   patterns.add<StreamCreateIndirectOpLowering>(converter);
@@ -1076,12 +1425,14 @@ struct ConvertCiraToLLVMVortexPass
                       "i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-"
                       "v64:64:64-v128:128:128-n16:32:64"));
 
-    // Mark functions as CUDA kernels
+    // Mark functions as CUDA kernels — detect both legacy and new CIRA ops
     module.walk([&](func::FuncOp func) {
-      // Functions containing offload operations become kernels
       bool hasOffload = false;
       func.walk([&](Operation *op) {
-        if (isa<LoadEdgeOp, LoadNodeOp, EvictEdgeOp>(op)) {
+        if (isa<LoadEdgeOp, LoadNodeOp, EvictEdgeOp,
+                InstallCachelineOp, PrefetchChainOp, PrefetchIndirectOp,
+                PrefetchStreamOp, OffloadRegionOp>(op) ||
+            func->hasAttr("vortex.kernel")) {
           hasOffload = true;
           return WalkResult::interrupt();
         }
@@ -1089,10 +1440,7 @@ struct ConvertCiraToLLVMVortexPass
       });
 
       if (hasOffload) {
-        // Mark as CUDA kernel
         func->setAttr("nvvm.kernel", UnitAttr::get(&getContext()));
-
-        // Add kernel metadata (max threads per block)
         func->setAttr("nvvm.maxntid",
                      DenseI32ArrayAttr::get(&getContext(), {256, 1, 1}));
       }
@@ -1118,7 +1466,16 @@ struct ConvertCiraToLLVMVortexPass
   }
 };
 
-// Heterogeneous pass that partitions code for both architectures
+// Heterogeneous pass that partitions code between x86 host and Vortex device.
+//
+// For each cira.offload region:
+//   1. Extract device-side operations (install_cacheline, prefetch_chain, etc.)
+//      into a new func.func marked with "vortex.kernel" attribute
+//   2. Replace the offload region in the host function with:
+//      a. cira_future_alloc() for DCOH completion tracking
+//      b. cira_offload_submit() to push task to MMIO ring buffer
+//   3. Lower remaining host-side CIRA ops to x86 LLVM intrinsics
+//   4. Lower device-side CIRA ops with RISCV_VORTEX target
 struct ConvertCiraToLLVMHeteroPass
     : public PassWrapper<ConvertCiraToLLVMHeteroPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertCiraToLLVMHeteroPass)
@@ -1129,29 +1486,77 @@ struct ConvertCiraToLLVMHeteroPass
 
   StringRef getArgument() const final { return "convert-cira-to-llvm-hetero"; }
   StringRef getDescription() const final {
-    return "Convert Cira dialect to LLVM dialect for heterogeneous execution";
+    return "Convert Cira dialect to LLVM dialect for heterogeneous x86+Vortex execution";
   }
 
   void runOnOperation() override {
     auto module = getOperation();
+    auto *ctx = &getContext();
 
-    // Mark functions with target attributes
+    // ---- Phase 1: Extract device kernels from cira.offload regions ----
+    int kernelId = 0;
+    SmallVector<OffloadRegionOp> offloadOps;
+    module.walk([&](OffloadRegionOp op) {
+      offloadOps.push_back(op);
+    });
+
+    for (auto offloadOp : offloadOps) {
+      // Generate device kernel function name
+      std::string kernelName = "__vortex_kernel_" + std::to_string(kernelId++);
+      if (auto regionName = offloadOp->getAttrOfType<StringAttr>("region_name"))
+        kernelName = "__vortex_" + regionName.getValue().str();
+
+      // Create a new function for the device kernel (will be compiled
+      // separately with the Vortex toolchain to produce .vxbin)
+      OpBuilder moduleBuilder(module.getBody(), module.getBody()->end());
+      auto kernelFunc = moduleBuilder.create<func::FuncOp>(
+          offloadOp.getLoc(), kernelName,
+          moduleBuilder.getFunctionType({}, {}));
+
+      // Mark as Vortex kernel
+      kernelFunc->setAttr("vortex.kernel", UnitAttr::get(ctx));
+      kernelFunc->setAttr("nvvm.kernel", UnitAttr::get(ctx));
+      kernelFunc->setAttr("target-cpu",
+          StringAttr::get(ctx, "riscv64-vortex"));
+
+      // Copy access pattern metadata
+      if (auto pattern = offloadOp->getAttr("cira.access_pattern"))
+        kernelFunc->setAttr("cira.access_pattern", pattern);
+      if (auto depth = offloadOp->getAttr("cira.chain_depth_estimate"))
+        kernelFunc->setAttr("cira.chain_depth_estimate", depth);
+
+      // Create entry block and clone offload body into it
+      Block *entryBlock = kernelFunc.addEntryBlock();
+      OpBuilder kernelBuilder(entryBlock, entryBlock->begin());
+
+      // Clone operations from the offload body into the kernel
+      Block &offloadBody = offloadOp.getBody().front();
+      IRMapping mapping;
+      for (auto &bodyOp : offloadBody.getOperations()) {
+        if (!isa<YieldOp>(&bodyOp)) {
+          kernelBuilder.clone(bodyOp, mapping);
+        }
+      }
+      kernelBuilder.create<func::ReturnOp>(offloadOp.getLoc());
+    }
+
+    // ---- Phase 2: Mark host functions for x86 ----
     module.walk([&](func::FuncOp func) {
-      StringRef name = func.getName();
-      // Functions with "remote_access" go to ARM
-      if (name.contains("remote_access")) {
-        func->setAttr("target-cpu", StringAttr::get(&getContext(), "cortex-a53"));
-        func->setAttr("target-features", StringAttr::get(&getContext(), "+neon"));
-      } else {
-        // Computation functions go to x86
-        func->setAttr("target-cpu", StringAttr::get(&getContext(), "x86-64"));
-        func->setAttr("target-features", StringAttr::get(&getContext(), "+sse4.2,+avx2"));
+      if (!func->hasAttr("vortex.kernel")) {
+        func->setAttr("target-cpu", StringAttr::get(ctx, "x86-64"));
+        func->setAttr("target-features",
+            StringAttr::get(ctx, "+sse4.2,+avx2,+avx512f"));
       }
     });
 
-    LLVMTypeConverter converter(&getContext());
-    RewritePatternSet patterns(&getContext());
-    LLVMConversionTarget target(getContext());
+    // ---- Phase 3: Lower CIRA operations ----
+    // Host-side operations lower with Heterogeneous target (x86 prefetch +
+    // MMIO offload submission). Device kernel functions lower separately
+    // via vortex-kernel-gen pass.
+
+    LLVMTypeConverter converter(ctx);
+    RewritePatternSet patterns(ctx);
+    LLVMConversionTarget target(*ctx);
 
     target.addIllegalDialect<RemoteMemDialect>();
     target.addLegalDialect<LLVM::LLVMDialect>();

@@ -13,6 +13,12 @@ add_mlir_dialect_library(MLIRRemoteMem
         OffloadOp.cpp
         CiraOps.cpp
         TwoPassTimingAnalysis.cpp
+        GpuOffloadDecision.cpp
+        GpuKernelGeneration.cpp
+        GpuMemoryOptimization.cpp
+        GpuRuntimeLowering.cpp
+        VortexKernelGen.cpp
+        Type2GpuCodeGen.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include
@@ -28,6 +34,8 @@ add_mlir_dialect_library(MLIRRemoteMem
         MLIRAnalysis
         MLIRSCFDialect
         MLIRArithDialect
+        MLIRLinalgDialect
+        MLIRFuncDialect
 )
 
 add_subdirectory(Transforms)
