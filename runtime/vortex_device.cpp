@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <string>
 #include <cstring>
 #include <cinttypes>
 #include <unistd.h>
@@ -516,4 +517,499 @@ int vortex_device_set_debug(vortex_device_h device, int enable) {
 
     device->debug_enabled = (enable != 0);
     return VORTEX_SUCCESS;
+}
+
+// ============================================================================
+// CXL Type-2 device-side firmware helpers
+// ============================================================================
+//
+// This section mirrors the hetGPU PACC firmware shape:
+//   * host stages job arguments in a CXL-visible control window,
+//   * host commits a small doorbell with a monotonically increasing seq,
+//   * device polls/consumes the doorbell, performs the memory operation, and
+//     writes both a control-window status and an optional CIRA completion line.
+//
+// The exported __vortex_* symbols are the device hooks emitted by CiraToLLVM
+// for RISCV_VORTEX.  They are also valid host-side fallbacks when this runtime
+// is linked without an actual Vortex firmware build.
+
+namespace {
+
+constexpr uint64_t VORTEX_CXL_JOB_MAGIC = 0x565843584c4a4f42ULL; // "VXCXLJOB"
+constexpr uint64_t HETGPU_PACC_JOB_MAGIC = 0x4847505550414343ULL; // "HGPUPACC"
+constexpr uint32_t VORTEX_CXL_JOB_VERSION = 1;
+constexpr uint32_t VORTEX_CXL_COMPLETION_MAGIC = 0xDEADBEEF;
+constexpr uint32_t VORTEX_CXL_CACHELINE_SIZE = 64;
+
+constexpr uint64_t VORTEX_CXL_DOORBELL_OFF = 0x0;
+constexpr uint64_t VORTEX_CXL_ARG_BASE_OFF = 0x100;
+constexpr uint64_t VORTEX_CXL_ARG_SLOT_BYTES = 0x400;
+constexpr uint64_t VORTEX_CXL_COMPLETION_OFF = 0x1f20;
+
+enum VortexCxlJobId : uint32_t {
+    VORTEX_CXL_JOB_NOP = 0,
+    VORTEX_CXL_JOB_INSTALL_CACHELINE = 1,
+    VORTEX_CXL_JOB_PREFETCH_CHAIN = 2,
+    VORTEX_CXL_JOB_STREAM_PREFETCH = 3,
+    VORTEX_CXL_JOB_CALL = 4,
+};
+
+enum VortexCxlStatus : uint32_t {
+    VORTEX_CXL_STATUS_SUCCESS = 0,
+    VORTEX_CXL_STATUS_RUNNING = 1,
+    VORTEX_CXL_STATUS_BAD_VERSION = 0xffff0001U,
+    VORTEX_CXL_STATUS_BAD_ARGS = 0xffff0002U,
+    VORTEX_CXL_STATUS_BAD_JOB = 0xffff00ffU,
+};
+
+struct VortexCxlDoorbell {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t job_id;
+    uint32_t flags;
+    uint32_t status;
+    uint64_t seq;
+};
+
+struct VortexCxlArgSlotHeader {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t job_id;
+    uint64_t seq;
+    uint64_t arg_len;
+};
+
+struct VortexCxlHostStatus {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t job_id;
+    uint32_t status;
+    uint64_t seq;
+};
+
+struct alignas(VORTEX_CXL_CACHELINE_SIZE) VortexCxlCompletion {
+    uint32_t magic;
+    uint32_t status;
+    uint64_t result;
+    uint64_t cycles;
+    uint64_t timestamp;
+    uint8_t reserved[32];
+};
+
+struct VortexCxlInstallCachelineJob {
+    uint64_t addr;
+    uint64_t size;
+    uint64_t completion_addr;
+    uint32_t cache_level;
+    uint32_t reserved;
+};
+
+struct VortexCxlPrefetchChainJob {
+    uint64_t start_node_addr;
+    uint64_t buf_addr;
+    uint64_t completion_addr;
+    uint32_t depth;
+    uint32_t next_ptr_offset;
+    uint32_t data_offset;
+    uint32_t data_size;
+};
+
+struct VortexCxlStreamPrefetchJob {
+    uint64_t base_addr;
+    uint64_t buf_addr;
+    uint64_t completion_addr;
+    uint64_t count;
+    uint32_t stride;
+    uint32_t elem_size;
+    uint32_t reserved;
+};
+
+struct VortexCxlCallJob {
+    uint64_t func_addr;
+    uint64_t operands_addr;
+    uint64_t completion_addr;
+    uint32_t num_operands;
+    uint32_t reserved;
+};
+
+using VortexCxlOffloadFn = void (*)(void** operands,
+                                    uint32_t num_operands,
+                                    void* completion);
+
+static inline void vortex_cxl_fence() {
+#if defined(__riscv)
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif
+}
+
+static inline void vortex_cxl_wait_for_interrupt() {
+#if defined(__riscv)
+    __asm__ volatile("wfi" ::: "memory");
+#else
+    usleep(50);
+#endif
+}
+
+static inline uint64_t vortex_cxl_cycles() {
+#if defined(__riscv)
+    uint64_t value;
+    __asm__ volatile("rdcycle %0" : "=r"(value));
+    return value;
+#else
+    return 0;
+#endif
+}
+
+static inline bool vortex_cxl_valid_magic(uint64_t magic) {
+    return magic == VORTEX_CXL_JOB_MAGIC || magic == HETGPU_PACC_JOB_MAGIC;
+}
+
+static inline uintptr_t vortex_cxl_align_down(uintptr_t value, uintptr_t align) {
+    return value & ~(align - 1);
+}
+
+static inline uintptr_t vortex_cxl_align_up(uintptr_t value, uintptr_t align) {
+    return (value + align - 1) & ~(align - 1);
+}
+
+static void vortex_cxl_copy_bytes(volatile uint8_t* dst,
+                                  const volatile uint8_t* src,
+                                  uint64_t size) {
+    uint64_t off = 0;
+    for (; off + sizeof(uint64_t) <= size; off += sizeof(uint64_t)) {
+        uint64_t value = *reinterpret_cast<const volatile uint64_t*>(src + off);
+        *reinterpret_cast<volatile uint64_t*>(dst + off) = value;
+    }
+    for (; off < size; ++off) {
+        dst[off] = src[off];
+    }
+}
+
+static uint64_t vortex_cxl_install_range(void* addr, uint64_t size) {
+    if (!addr || size == 0) return 0;
+
+    uintptr_t begin = vortex_cxl_align_down(
+        reinterpret_cast<uintptr_t>(addr), VORTEX_CXL_CACHELINE_SIZE);
+    uintptr_t end = vortex_cxl_align_up(
+        reinterpret_cast<uintptr_t>(addr) + size, VORTEX_CXL_CACHELINE_SIZE);
+    uint64_t installed = 0;
+
+    for (uintptr_t line = begin; line < end; line += VORTEX_CXL_CACHELINE_SIZE) {
+        auto* ptr = reinterpret_cast<volatile uint8_t*>(line);
+
+        // Read the full line, then write it back unchanged.  On a CXL Type-2
+        // DCOH path the store takes device ownership and makes the line visible
+        // to the host coherency domain without changing payload bytes.
+        uint64_t words[VORTEX_CXL_CACHELINE_SIZE / sizeof(uint64_t)];
+        for (uint32_t i = 0; i < VORTEX_CXL_CACHELINE_SIZE / sizeof(uint64_t); ++i) {
+            words[i] = *reinterpret_cast<volatile uint64_t*>(
+                ptr + i * sizeof(uint64_t));
+        }
+        vortex_cxl_fence();
+        for (uint32_t i = 0; i < VORTEX_CXL_CACHELINE_SIZE / sizeof(uint64_t); ++i) {
+            *reinterpret_cast<volatile uint64_t*>(
+                ptr + i * sizeof(uint64_t)) = words[i];
+        }
+        ++installed;
+    }
+
+    vortex_cxl_fence();
+    return installed;
+}
+
+static uint64_t vortex_cxl_prefetch_chain_impl(void* start_node,
+                                               uint64_t next_ptr_offset,
+                                               uint64_t depth) {
+    uint64_t visited = 0;
+    auto* node = reinterpret_cast<volatile uint8_t*>(start_node);
+
+    while (node && visited < depth) {
+        vortex_cxl_install_range(const_cast<uint8_t*>(
+                                     reinterpret_cast<const volatile uint8_t*>(node)),
+                                 VORTEX_CXL_CACHELINE_SIZE);
+
+        auto* next_slot = reinterpret_cast<volatile uintptr_t*>(
+            const_cast<uint8_t*>(reinterpret_cast<const volatile uint8_t*>(node)) +
+            next_ptr_offset);
+        node = reinterpret_cast<volatile uint8_t*>(*next_slot);
+        ++visited;
+    }
+
+    return visited;
+}
+
+static void vortex_cxl_write_completion(uint64_t completion_addr,
+                                        uint32_t status,
+                                        uint64_t result,
+                                        uint64_t start_cycles) {
+    if (!completion_addr) return;
+
+    auto* completion =
+        reinterpret_cast<volatile VortexCxlCompletion*>(completion_addr);
+    completion->result = result;
+    completion->cycles = vortex_cxl_cycles() - start_cycles;
+    completion->timestamp = vortex_cxl_cycles();
+    completion->status = status;
+    vortex_cxl_fence();
+    completion->magic = VORTEX_CXL_COMPLETION_MAGIC;
+    vortex_cxl_fence();
+}
+
+static void vortex_cxl_mirror_status(volatile uint8_t* control,
+                                     uint32_t job_id,
+                                     uint64_t seq,
+                                     uint32_t status) {
+    if (!control) return;
+    auto* host = reinterpret_cast<volatile VortexCxlHostStatus*>(
+        control + VORTEX_CXL_COMPLETION_OFF);
+    host->magic = VORTEX_CXL_JOB_MAGIC;
+    host->version = VORTEX_CXL_JOB_VERSION;
+    host->job_id = job_id;
+    host->status = status;
+    host->seq = seq;
+    vortex_cxl_fence();
+}
+
+static volatile VortexCxlArgSlotHeader* vortex_cxl_arg_slot(volatile uint8_t* control,
+                                                            uint32_t job_id) {
+    if (!control) return nullptr;
+    if (job_id > VORTEX_CXL_JOB_CALL) return nullptr;
+
+    return reinterpret_cast<volatile VortexCxlArgSlotHeader*>(
+        control + VORTEX_CXL_ARG_BASE_OFF +
+        static_cast<uint64_t>(job_id) * VORTEX_CXL_ARG_SLOT_BYTES);
+}
+
+static const void* vortex_cxl_arg_payload(const volatile VortexCxlArgSlotHeader* slot) {
+    return reinterpret_cast<const void*>(
+        reinterpret_cast<uintptr_t>(slot) + sizeof(VortexCxlArgSlotHeader));
+}
+
+template <typename T>
+static const T* vortex_cxl_checked_arg(const volatile VortexCxlArgSlotHeader* slot,
+                                       const VortexCxlDoorbell& doorbell) {
+    if (!slot ||
+        !vortex_cxl_valid_magic(slot->magic) ||
+        slot->version != VORTEX_CXL_JOB_VERSION ||
+        slot->job_id != doorbell.job_id ||
+        slot->seq != doorbell.seq ||
+        slot->arg_len < sizeof(T)) {
+        return nullptr;
+    }
+    return reinterpret_cast<const T*>(vortex_cxl_arg_payload(slot));
+}
+
+static uint32_t vortex_cxl_run_install(const VortexCxlInstallCachelineJob* job,
+                                       uint64_t start_cycles) {
+    if (!job || !job->addr || job->size == 0) {
+        return VORTEX_CXL_STATUS_BAD_ARGS;
+    }
+    uint64_t lines = vortex_cxl_install_range(
+        reinterpret_cast<void*>(job->addr), job->size);
+    vortex_cxl_write_completion(job->completion_addr, VORTEX_CXL_STATUS_SUCCESS,
+                                lines, start_cycles);
+    return VORTEX_CXL_STATUS_SUCCESS;
+}
+
+static uint32_t vortex_cxl_run_prefetch_chain(const VortexCxlPrefetchChainJob* job,
+                                              uint64_t start_cycles) {
+    if (!job || !job->start_node_addr) {
+        return VORTEX_CXL_STATUS_BAD_ARGS;
+    }
+
+    uint64_t visited = 0;
+    auto* node = reinterpret_cast<volatile uint8_t*>(job->start_node_addr);
+    auto* dst = reinterpret_cast<volatile uint8_t*>(job->buf_addr);
+
+    while (node && visited < job->depth) {
+        vortex_cxl_install_range(const_cast<uint8_t*>(
+                                     reinterpret_cast<const volatile uint8_t*>(node)),
+                                 VORTEX_CXL_CACHELINE_SIZE);
+
+        if (dst && job->data_size != 0) {
+            const volatile uint8_t* src = node + job->data_offset;
+            volatile uint8_t* out = dst + visited * job->data_size;
+            vortex_cxl_copy_bytes(out, src, job->data_size);
+        }
+
+        auto* next_slot = reinterpret_cast<volatile uintptr_t*>(
+            const_cast<uint8_t*>(reinterpret_cast<const volatile uint8_t*>(node)) +
+            job->next_ptr_offset);
+        node = reinterpret_cast<volatile uint8_t*>(*next_slot);
+        ++visited;
+    }
+
+    vortex_cxl_write_completion(job->completion_addr, VORTEX_CXL_STATUS_SUCCESS,
+                                visited, start_cycles);
+    return VORTEX_CXL_STATUS_SUCCESS;
+}
+
+static uint32_t vortex_cxl_run_stream_prefetch(const VortexCxlStreamPrefetchJob* job,
+                                               uint64_t start_cycles) {
+    if (!job || !job->base_addr || job->count == 0 || job->elem_size == 0) {
+        return VORTEX_CXL_STATUS_BAD_ARGS;
+    }
+
+    auto* base = reinterpret_cast<volatile uint8_t*>(job->base_addr);
+    auto* dst = reinterpret_cast<volatile uint8_t*>(job->buf_addr);
+    uint64_t stride = job->stride ? job->stride : job->elem_size;
+
+    for (uint64_t i = 0; i < job->count; ++i) {
+        volatile uint8_t* src = base + i * stride;
+        vortex_cxl_install_range(const_cast<uint8_t*>(
+                                     reinterpret_cast<const volatile uint8_t*>(src)),
+                                 job->elem_size);
+        if (dst) {
+            vortex_cxl_copy_bytes(dst + i * job->elem_size, src, job->elem_size);
+        }
+    }
+
+    vortex_cxl_write_completion(job->completion_addr, VORTEX_CXL_STATUS_SUCCESS,
+                                job->count, start_cycles);
+    return VORTEX_CXL_STATUS_SUCCESS;
+}
+
+static uint32_t vortex_cxl_run_call(const VortexCxlCallJob* job,
+                                    uint64_t start_cycles) {
+    if (!job || !job->func_addr) {
+        return VORTEX_CXL_STATUS_BAD_ARGS;
+    }
+
+    auto fn = reinterpret_cast<VortexCxlOffloadFn>(job->func_addr);
+    auto operands = reinterpret_cast<void**>(job->operands_addr);
+    fn(operands, job->num_operands, reinterpret_cast<void*>(job->completion_addr));
+
+    // If the callee did not use the CIRA completion line itself, make the
+    // generic call complete successfully.
+    vortex_cxl_write_completion(job->completion_addr, VORTEX_CXL_STATUS_SUCCESS,
+                                0, start_cycles);
+    return VORTEX_CXL_STATUS_SUCCESS;
+}
+
+static uint32_t vortex_cxl_run_job(volatile uint8_t* control,
+                                   const VortexCxlDoorbell& doorbell) {
+    if (doorbell.version != VORTEX_CXL_JOB_VERSION) {
+        return VORTEX_CXL_STATUS_BAD_VERSION;
+    }
+    if (doorbell.job_id == VORTEX_CXL_JOB_NOP) {
+        return VORTEX_CXL_STATUS_SUCCESS;
+    }
+
+    uint64_t start_cycles = vortex_cxl_cycles();
+    auto* slot = vortex_cxl_arg_slot(control, doorbell.job_id);
+
+    switch (doorbell.job_id) {
+    case VORTEX_CXL_JOB_INSTALL_CACHELINE:
+        return vortex_cxl_run_install(
+            vortex_cxl_checked_arg<VortexCxlInstallCachelineJob>(slot, doorbell),
+            start_cycles);
+    case VORTEX_CXL_JOB_PREFETCH_CHAIN:
+        return vortex_cxl_run_prefetch_chain(
+            vortex_cxl_checked_arg<VortexCxlPrefetchChainJob>(slot, doorbell),
+            start_cycles);
+    case VORTEX_CXL_JOB_STREAM_PREFETCH:
+        return vortex_cxl_run_stream_prefetch(
+            vortex_cxl_checked_arg<VortexCxlStreamPrefetchJob>(slot, doorbell),
+            start_cycles);
+    case VORTEX_CXL_JOB_CALL:
+        return vortex_cxl_run_call(
+            vortex_cxl_checked_arg<VortexCxlCallJob>(slot, doorbell),
+            start_cycles);
+    default:
+        return VORTEX_CXL_STATUS_BAD_JOB;
+    }
+}
+
+} // namespace
+
+extern "C" void __vortex_install_cacheline(void* addr,
+                                           uint64_t size,
+                                           int cache_level) {
+    (void)cache_level;
+    vortex_cxl_install_range(addr, size);
+}
+
+extern "C" void __vortex_prefetch_chain(void* start_node,
+                                        uint64_t offset,
+                                        uint64_t depth) {
+    vortex_cxl_prefetch_chain_impl(start_node, offset, depth);
+}
+
+extern "C" void __vortex_prefetch_chain_kernel(void* stream,
+                                               uint64_t depth) {
+    if (!stream || depth == 0) return;
+
+    // Fast path for a descriptor-style stream:
+    //   [0] magic, [8] current node, [16] next pointer offset.
+    // If no descriptor magic is present, treat stream as the starting node and
+    // assume the next pointer is the first word of each node.
+    struct StreamDesc {
+        uint64_t magic;
+        uint64_t current;
+        uint64_t next_ptr_offset;
+    };
+
+    auto* desc = reinterpret_cast<volatile StreamDesc*>(stream);
+    if (vortex_cxl_valid_magic(desc->magic)) {
+        vortex_cxl_prefetch_chain_impl(reinterpret_cast<void*>(desc->current),
+                                       desc->next_ptr_offset, depth);
+        return;
+    }
+
+    vortex_cxl_prefetch_chain_impl(stream, 0, depth);
+}
+
+extern "C" uint32_t vortex_cxl_firmware_service_once(void* control_window) {
+    if (!control_window) return VORTEX_CXL_STATUS_BAD_ARGS;
+
+    auto* control = reinterpret_cast<volatile uint8_t*>(control_window);
+    auto* doorbell = reinterpret_cast<volatile VortexCxlDoorbell*>(
+        control + VORTEX_CXL_DOORBELL_OFF);
+
+    vortex_cxl_fence();
+    if (!vortex_cxl_valid_magic(doorbell->magic)) {
+        return VORTEX_CXL_STATUS_BAD_ARGS;
+    }
+
+    VortexCxlDoorbell local = {
+        doorbell->magic,
+        doorbell->version,
+        doorbell->job_id,
+        doorbell->flags,
+        doorbell->status,
+        doorbell->seq,
+    };
+
+    doorbell->status = VORTEX_CXL_STATUS_RUNNING;
+    vortex_cxl_mirror_status(control, local.job_id, local.seq,
+                             VORTEX_CXL_STATUS_RUNNING);
+
+    uint32_t status = vortex_cxl_run_job(control, local);
+
+    doorbell->status = status;
+    vortex_cxl_mirror_status(control, local.job_id, local.seq, status);
+    return status;
+}
+
+extern "C" void vortex_cxl_firmware_loop(void* control_window) {
+    if (!control_window) return;
+
+    auto* control = reinterpret_cast<volatile uint8_t*>(control_window);
+    auto* doorbell = reinterpret_cast<volatile VortexCxlDoorbell*>(
+        control + VORTEX_CXL_DOORBELL_OFF);
+    uint64_t last_seq = 0;
+
+    for (;;) {
+        vortex_cxl_fence();
+        if (vortex_cxl_valid_magic(doorbell->magic) &&
+            doorbell->seq != last_seq) {
+            last_seq = doorbell->seq;
+            (void)vortex_cxl_firmware_service_once(
+                const_cast<uint8_t*>(reinterpret_cast<const volatile uint8_t*>(control)));
+        } else {
+            vortex_cxl_wait_for_interrupt();
+        }
+    }
 }

@@ -249,6 +249,69 @@ extern "C" {
 
     // Delay buffer
     void cira_type2_drain_delay_buffer(void* controller);
+
+    // ====================================================================
+    // Cache line management (host-side, called from lowered CIRA ops)
+    // ====================================================================
+
+    // Install cache lines from CXL memory into host cache hierarchy.
+    // Uses PREFETCHT0/T1/T2 based on cache_level (1=L1, 2=L2, 3=LLC).
+    // Loops over [addr, addr+size) in 64-byte increments.
+    void cira_install_cacheline_x86(void* addr, uint64_t size, int cache_level);
+
+    // Evict cache lines from host cache hierarchy.
+    // Uses CLDEMOTE (Granite Rapids+) to move from L1->LLC, or CLFLUSHOPT
+    // for full eviction. Loops over [addr, addr+size) in 64-byte increments.
+    void cira_evict_hint_x86(void* addr, uint64_t size);
+
+    // ====================================================================
+    // Future management (host-side, for DCOH-coherent completion tracking)
+    // ====================================================================
+
+    // Allocate a 64-byte-aligned completion structure.
+    // Returns pointer to zeroed completion_data_t (magic=0, not ready).
+    void* cira_future_alloc(void);
+
+    // Await completion of an async operation.
+    // Uses MONITOR/MWAIT on the completion cacheline (Granite Rapids: doesn't
+    // alter cstate). Returns pointer to result field in completion struct.
+    // Spins until magic == 0xDEADBEEF (set by device via DCOH writeback).
+    void* cira_future_await(void* completion_ptr);
+
+    // Free a completion structure allocated by cira_future_alloc.
+    void cira_future_free(void* completion_ptr);
+
+    // ====================================================================
+    // Phase barrier and offload submission
+    // ====================================================================
+
+    // Wait for all outstanding device tasks to complete.
+    // Checks control bits in all active completion cachelines.
+    void cira_phase_barrier(void);
+
+    // Submit an offload task to the device via MMIO ring buffer.
+    // func_ptr: device-side function address
+    // operands: array of operand pointers
+    // num_operands: number of operands
+    // completion_ptr: DCOH completion address
+    void cira_offload_submit(void* func_ptr, void** operands,
+                             int num_operands, void* completion_ptr);
+
+    // Get device function address by name (for function pointer resolution)
+    void* cira_get_device_func_addr(void);
+
+    // ====================================================================
+    // Vortex device-side functions (linked into .vxbin)
+    // ====================================================================
+
+    // Device: take ownership of cacheline and install into host LLC via DCOH
+    void __vortex_install_cacheline(void* addr, uint64_t size, int cache_level);
+
+    // Device: chase pointer chain and prefetch nodes
+    void __vortex_prefetch_chain(void* start_node, uint64_t offset, uint64_t depth);
+
+    // Device: kernel entry for prefetch chain
+    void __vortex_prefetch_chain_kernel(void* stream, uint64_t depth);
 }
 
 } // namespace runtime
