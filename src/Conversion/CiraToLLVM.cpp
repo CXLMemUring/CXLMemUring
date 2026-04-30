@@ -386,7 +386,7 @@ struct CallOpLowering : public ConversionPattern {
 // New CIRA Operation Lowerings (Memory, Cache, Sync, Control, Stream)
 //===----------------------------------------------------------------------===//
 
-/// Lower cira.alloc_cxl to LLVM malloc with CXL NUMA hint
+/// Lower cira.alloc_cxl to a runtime-managed LLC tile allocation.
 struct AllocCxlOpLowering : public ConversionPattern {
   AllocCxlOpLowering(LLVMTypeConverter &converter)
       : ConversionPattern(converter, AllocCxlOp::getOperationName(), 1,
@@ -394,17 +394,14 @@ struct AllocCxlOpLowering : public ConversionPattern {
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                                 ConversionPatternRewriter &rewriter) const override {
-    auto allocOp = cast<AllocCxlOp>(op);
     Location loc = op->getLoc();
     auto *ctx = rewriter.getContext();
 
-    // Call numa_alloc_onnode or mmap with CXL memory binding
-    // For now, lower to standard malloc - real impl would use numa_alloc
-    auto mallocFunc = FlatSymbolRefAttr::get(ctx, "malloc");
+    auto allocFunc = FlatSymbolRefAttr::get(ctx, "cira_llc_tile_alloc");
     auto ptrType = LLVM::LLVMPointerType::get(ctx);
 
     auto result = rewriter.create<LLVM::CallOp>(
-        loc, ptrType, mallocFunc, operands[0]);
+        loc, ptrType, allocFunc, operands[0]);
 
     rewriter.replaceOp(op, result.getResult());
     return success();
@@ -757,7 +754,7 @@ struct BarrierOpLowering : public ConversionPattern {
   }
 };
 
-/// Lower cira.release to free
+/// Lower cira.release to the runtime tile/free path.
 struct ReleaseOpLowering : public ConversionPattern {
   ReleaseOpLowering(LLVMTypeConverter &converter)
       : ConversionPattern(converter, ReleaseOp::getOperationName(), 1,
@@ -768,7 +765,7 @@ struct ReleaseOpLowering : public ConversionPattern {
     Location loc = op->getLoc();
     auto *ctx = rewriter.getContext();
 
-    auto freeFunc = FlatSymbolRefAttr::get(ctx, "free");
+    auto freeFunc = FlatSymbolRefAttr::get(ctx, "cira_llc_tile_free");
     rewriter.create<LLVM::CallOp>(loc, TypeRange{}, freeFunc, operands[0]);
     rewriter.eraseOp(op);
     return success();

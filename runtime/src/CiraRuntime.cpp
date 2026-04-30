@@ -1,4 +1,5 @@
 #include "CiraRuntime.h"
+#include "vortex_device.h"
 #include <iostream>
 #include <unordered_map>
 #include <cstring>
@@ -7,7 +8,13 @@
 #include <queue>
 #include <mutex>
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <cinttypes>
+#include <limits>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -796,6 +803,187 @@ std::unique_ptr<CiraRuntime> CiraRuntime::create() {
     return std::make_unique<CiraRuntimeImpl>();
 }
 
+namespace {
+
+constexpr size_t CIRA_MMIO_DEFAULT_CONTROL_BYTES = VORTEX_CXL_MMIO_CONTROL_BYTES;
+constexpr uint32_t CIRA_COMPLETION_MAGIC = 0xDEADBEEF;
+constexpr size_t CIRA_CACHELINE_BYTES = 64;
+
+struct LlcTileMetadata {
+    void* allocation = nullptr;
+    size_t requested_size = 0;
+    size_t aligned_size = 0;
+    void* completion = nullptr;
+};
+
+std::atomic<uint64_t> g_mmio_submit_seq{1};
+std::atomic<void*> g_forced_device_func{nullptr};
+std::mutex g_mmio_map_mutex;
+void* g_mmio_control_window = nullptr;
+size_t g_mmio_control_size = 0;
+int g_mmio_fd = -1;
+std::mutex g_llc_tile_mutex;
+std::unordered_map<void*, LlcTileMetadata> g_llc_tiles;
+
+size_t align_up_cacheline(uint64_t size) {
+    uint64_t requested = size ? size : CIRA_CACHELINE_BYTES;
+    uint64_t max_size = static_cast<uint64_t>(std::numeric_limits<size_t>::max());
+    if (requested > max_size - (CIRA_CACHELINE_BYTES - 1)) return 0;
+    return static_cast<size_t>((requested + CIRA_CACHELINE_BYTES - 1) &
+                               ~(static_cast<uint64_t>(CIRA_CACHELINE_BYTES) - 1));
+}
+
+bool lookup_llc_tile(void* tile, LlcTileMetadata& metadata) {
+    if (!tile) return false;
+    std::lock_guard<std::mutex> lock(g_llc_tile_mutex);
+    auto it = g_llc_tiles.find(tile);
+    if (it == g_llc_tiles.end()) return false;
+    metadata = it->second;
+    return true;
+}
+
+bool parse_env_u64(const char* name, uint64_t& value) {
+    const char* text = std::getenv(name);
+    if (!text || !*text) return false;
+
+    char* end = nullptr;
+    errno = 0;
+    unsigned long long parsed = std::strtoull(text, &end, 0);
+    if (errno != 0 || end == text || (end && *end != '\0')) return false;
+
+    value = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+bool env_flag_enabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value && *value && std::strcmp(value, "0") != 0;
+}
+
+const char* first_env(const char* primary, const char* fallback) {
+    const char* value = std::getenv(primary);
+    if (value && *value) return value;
+    value = std::getenv(fallback);
+    return (value && *value) ? value : nullptr;
+}
+
+void clear_completion(void* completion_ptr) {
+    if (!completion_ptr) return;
+    std::memset(completion_ptr, 0, 64);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+}
+
+void complete_in_software(void* completion_ptr, uint32_t status,
+                          uint64_t result = 0) {
+    if (!completion_ptr) return;
+
+    auto* base = static_cast<uint8_t*>(completion_ptr);
+    *reinterpret_cast<volatile uint32_t*>(base + 4) = status;
+    *reinterpret_cast<volatile uint64_t*>(base + 8) = result;
+    *reinterpret_cast<volatile uint64_t*>(base + 16) = 0;
+    *reinterpret_cast<volatile uint64_t*>(base + 24) = 0;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    *reinterpret_cast<volatile uint32_t*>(base) = CIRA_COMPLETION_MAGIC;
+}
+
+void* configured_device_func(void* func_ptr) {
+    if (func_ptr) return func_ptr;
+
+    void* forced = g_forced_device_func.load(std::memory_order_acquire);
+    if (forced) return forced;
+
+    uint64_t addr = 0;
+    if (parse_env_u64("CIRA_CXL_DEVICE_FUNC_ADDR", addr) ||
+        parse_env_u64("CIRA_TYPE2_DEVICE_FUNC_ADDR", addr)) {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+    }
+
+    return nullptr;
+}
+
+void* configured_mmio_control_window() {
+    std::lock_guard<std::mutex> lock(g_mmio_map_mutex);
+    if (g_mmio_control_window) return g_mmio_control_window;
+
+    uint64_t addr = 0;
+    if (parse_env_u64("CIRA_CXL_MMIO_ADDR", addr) ||
+        parse_env_u64("CIRA_TYPE2_MMIO_ADDR", addr)) {
+        g_mmio_control_window = reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+        uint64_t size = CIRA_MMIO_DEFAULT_CONTROL_BYTES;
+        parse_env_u64("CIRA_CXL_MMIO_SIZE", size) ||
+            parse_env_u64("CIRA_TYPE2_MMIO_SIZE", size);
+        g_mmio_control_size = static_cast<size_t>(size);
+        return g_mmio_control_window;
+    }
+
+    const char* path = first_env("CIRA_CXL_MMIO_PATH", "CIRA_TYPE2_MMIO_PATH");
+    if (!path) return nullptr;
+
+    uint64_t size = CIRA_MMIO_DEFAULT_CONTROL_BYTES;
+    parse_env_u64("CIRA_CXL_MMIO_SIZE", size) ||
+        parse_env_u64("CIRA_TYPE2_MMIO_SIZE", size);
+
+    uint64_t offset = 0;
+    parse_env_u64("CIRA_CXL_MMIO_OFFSET", offset) ||
+        parse_env_u64("CIRA_TYPE2_MMIO_OFFSET", offset);
+
+    int fd = open(path, O_RDWR | O_SYNC | O_CLOEXEC);
+    if (fd < 0) {
+        std::cerr << "cira_offload_submit: open MMIO control window " << path
+                  << " failed: " << std::strerror(errno) << std::endl;
+        return nullptr;
+    }
+
+    void* map = mmap(nullptr, static_cast<size_t>(size),
+                     PROT_READ | PROT_WRITE, MAP_SHARED,
+                     fd, static_cast<off_t>(offset));
+    if (map == MAP_FAILED) {
+        std::cerr << "cira_offload_submit: mmap MMIO control window " << path
+                  << " offset=0x" << std::hex << offset
+                  << " size=0x" << size << std::dec
+                  << " failed: " << std::strerror(errno) << std::endl;
+        close(fd);
+        return nullptr;
+    }
+
+    g_mmio_fd = fd;
+    g_mmio_control_window = map;
+    g_mmio_control_size = static_cast<size_t>(size);
+    return g_mmio_control_window;
+}
+
+bool submit_mmio_call(void* func_ptr, void** operands,
+                      int num_operands, void* completion_ptr) {
+    void* control = configured_mmio_control_window();
+    if (!control) return false;
+
+    void* device_func = configured_device_func(func_ptr);
+    if (!device_func) {
+        if (env_flag_enabled("CIRA_CXL_MMIO_STRICT")) {
+            std::cerr << "cira_offload_submit: MMIO window is configured but "
+                      << "no device function address was provided" << std::endl;
+        }
+        return false;
+    }
+
+    uint64_t seq = g_mmio_submit_seq.fetch_add(1, std::memory_order_relaxed);
+    uint32_t argc = num_operands > 0 ? static_cast<uint32_t>(num_operands) : 0;
+    int rc = vortex_cxl_submit_call_mmio(control, seq, device_func,
+                                         operands, argc, completion_ptr);
+    if (rc != VORTEX_SUCCESS) {
+        std::cerr << "cira_offload_submit: MMIO submit failed, rc=" << rc
+                  << std::endl;
+        return false;
+    }
+
+    if (env_flag_enabled("CIRA_CXL_MMIO_WAIT") && completion_ptr) {
+        (void)cira_future_await(completion_ptr);
+    }
+    return true;
+}
+
+} // namespace
+
 // C API Implementation
 extern "C" {
     void* cira_runtime_create() {
@@ -940,6 +1128,104 @@ extern "C" {
 
         // Memory fence to ensure all prefetches are issued
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    }
+
+    void* cira_llc_tile_alloc(uint64_t size) {
+        size_t aligned_size = align_up_cacheline(size);
+        if (aligned_size == 0) return nullptr;
+
+        void* tile = nullptr;
+        int ret = posix_memalign(&tile, CIRA_CACHELINE_BYTES, aligned_size);
+        if (ret != 0 || !tile) return nullptr;
+
+        std::memset(tile, 0, aligned_size);
+
+        void* completion = cira_future_alloc();
+        if (!completion) {
+            free(tile);
+            return nullptr;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_llc_tile_mutex);
+            g_llc_tiles[tile] = LlcTileMetadata{
+                tile,
+                size ? static_cast<size_t>(size) : CIRA_CACHELINE_BYTES,
+                aligned_size,
+                completion,
+            };
+        }
+
+        // A freshly allocated tile is immediately consumable.  Later CXL
+        // installs clear and re-arm this completion before delivery.
+        complete_in_software(completion, 0, reinterpret_cast<uint64_t>(tile));
+        cira_install_cacheline_x86(tile, aligned_size, 3);
+        return tile;
+    }
+
+    void cira_llc_tile_free(void* tile) {
+        if (!tile) return;
+
+        LlcTileMetadata metadata;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(g_llc_tile_mutex);
+            auto it = g_llc_tiles.find(tile);
+            if (it != g_llc_tiles.end()) {
+                metadata = it->second;
+                g_llc_tiles.erase(it);
+                found = true;
+            }
+        }
+
+        if (!found) {
+            free(tile);
+            return;
+        }
+
+        cira_future_free(metadata.completion);
+        free(metadata.allocation);
+    }
+
+    void* cira_llc_tile_future(void* tile) {
+        LlcTileMetadata metadata;
+        return lookup_llc_tile(tile, metadata) ? metadata.completion : nullptr;
+    }
+
+    void* cira_llc_tile_install_from_cxl(void* tile, const void* cxl_addr,
+                                         uint64_t size, void* completion_ptr) {
+        if (!cxl_addr || size == 0) return nullptr;
+
+        void* dst = tile ? tile : cira_llc_tile_alloc(size);
+        if (!dst) return nullptr;
+
+        LlcTileMetadata metadata;
+        bool found = lookup_llc_tile(dst, metadata);
+        uint64_t max_size = static_cast<uint64_t>(std::numeric_limits<size_t>::max());
+        if (size > max_size) return nullptr;
+        size_t copy_size = static_cast<size_t>(size);
+        if (found) copy_size = std::min(copy_size, metadata.aligned_size);
+
+        void* completion = completion_ptr;
+        if (!completion && found) completion = metadata.completion;
+
+        clear_completion(completion);
+        std::memcpy(dst, cxl_addr, copy_size);
+        cira_install_cacheline_x86(dst, copy_size, 3);
+        complete_in_software(completion, 0, reinterpret_cast<uint64_t>(dst));
+        return dst;
+    }
+
+    void* cira_llc_tile_get_mwait(void* tile) {
+        if (!tile) return nullptr;
+
+        LlcTileMetadata metadata;
+        if (lookup_llc_tile(tile, metadata) && metadata.completion) {
+            (void)cira_future_await(metadata.completion);
+            cira_install_cacheline_x86(tile, metadata.aligned_size, 3);
+        }
+
+        return tile;
     }
 
     void cira_evict_hint_x86(void* addr, uint64_t size) {
@@ -1118,20 +1404,18 @@ extern "C" {
         // Execute the offloaded function on a helper thread
         // (In real hardware, this goes through the MMIO queue)
 
-        if (completion_ptr) {
-            // Mark completion immediately in simulation mode
-            // Real hardware: device writes this via DCOH after execution
-            volatile uint32_t* magic =
-                reinterpret_cast<volatile uint32_t*>(completion_ptr);
-            volatile uint32_t* status =
-                reinterpret_cast<volatile uint32_t*>(
-                    reinterpret_cast<char*>(completion_ptr) + 4);
+        clear_completion(completion_ptr);
 
-            // In simulation: execute synchronously
-            *status = 0;  // success
-            __atomic_thread_fence(__ATOMIC_RELEASE);
-            *magic = 0xDEADBEEF;  // signal done
+        // Hardware/FPGA path: write the call-job struct into the configured
+        // CXL-visible MMIO control window.  The device firmware completes the
+        // future via DCOH once it consumes the doorbell.
+        if (submit_mmio_call(func_ptr, operands, num_operands, completion_ptr)) {
+            return;
         }
+
+        // Software fallback: no MMIO window or no device function address was
+        // configured, so preserve the old synchronous success behavior.
+        complete_in_software(completion_ptr, 0);
     }
 
     void* cira_get_device_func_addr(void) {

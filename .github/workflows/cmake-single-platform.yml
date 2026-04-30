@@ -11,34 +11,49 @@ on:
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: Release
+  LLVM_VERSION: 17
 
 jobs:
   build:
     # The CMake configure and build commands are platform agnostic and should work equally well on Windows or Mac.
     # You can convert this to a matrix build if you need cross-platform coverage.
     # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v4
 
     - name: Install MLIR dependencies
+      shell: bash
       run: |
+        set -euxo pipefail
         sudo apt-get update
-        sudo apt-get install -y libmlir-20-dev libclang-20-dev llvm-20-dev mlir-20-tools
+        sudo apt-get install -y \
+          clang-${LLVM_VERSION} \
+          libclang-${LLVM_VERSION}-dev \
+          llvm-${LLVM_VERSION}-dev \
+          libmlir-${LLVM_VERSION}-dev \
+          mlir-${LLVM_VERSION}-tools \
+          ninja-build
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DMLIR_DIR=/usr/lib/llvm-20/lib/cmake/mlir/
+      shell: bash
+      run: |
+        set -euxo pipefail
+        cmake -S "${{github.workspace}}" -B "${{github.workspace}}/build" -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DLLVM_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/llvm \
+          -DMLIR_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/mlir \
+          -DClang_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/clang \
+          -DCMAKE_PREFIX_PATH=/usr/lib/llvm-${LLVM_VERSION}
 
     - name: Build
       # Build your program with the given configuration
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel 2
 
     - name: Test
-      working-directory: ${{github.workspace}}/build
       # Execute tests defined by the CMake configuration.
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest -C ${{env.BUILD_TYPE}}
-
+      run: ctest --test-dir ${{github.workspace}}/build -C ${{env.BUILD_TYPE}} --output-on-failure

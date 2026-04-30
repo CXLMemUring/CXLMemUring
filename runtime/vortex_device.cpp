@@ -8,6 +8,7 @@
 #include <string>
 #include <cstring>
 #include <cinttypes>
+#include <atomic>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -545,6 +546,8 @@ constexpr uint64_t VORTEX_CXL_DOORBELL_OFF = 0x0;
 constexpr uint64_t VORTEX_CXL_ARG_BASE_OFF = 0x100;
 constexpr uint64_t VORTEX_CXL_ARG_SLOT_BYTES = 0x400;
 constexpr uint64_t VORTEX_CXL_COMPLETION_OFF = 0x1f20;
+constexpr uint64_t VORTEX_CXL_ARG_PAYLOAD_BYTES =
+    VORTEX_CXL_ARG_SLOT_BYTES - sizeof(uint64_t) * 4;
 
 enum VortexCxlJobId : uint32_t {
     VORTEX_CXL_JOB_NOP = 0,
@@ -687,6 +690,16 @@ static void vortex_cxl_copy_bytes(volatile uint8_t* dst,
     }
 }
 
+static void vortex_cxl_store_bytes(volatile void* dst,
+                                   const void* src,
+                                   uint64_t size) {
+    auto* out = static_cast<volatile uint8_t*>(dst);
+    auto* in = static_cast<const uint8_t*>(src);
+    for (uint64_t off = 0; off < size; ++off) {
+        out[off] = in[off];
+    }
+}
+
 static uint64_t vortex_cxl_install_range(void* addr, uint64_t size) {
     if (!addr || size == 0) return 0;
 
@@ -785,6 +798,12 @@ static volatile VortexCxlArgSlotHeader* vortex_cxl_arg_slot(volatile uint8_t* co
 static const void* vortex_cxl_arg_payload(const volatile VortexCxlArgSlotHeader* slot) {
     return reinterpret_cast<const void*>(
         reinterpret_cast<uintptr_t>(slot) + sizeof(VortexCxlArgSlotHeader));
+}
+
+static volatile uint8_t* vortex_cxl_mutable_arg_payload(volatile VortexCxlArgSlotHeader* slot) {
+    return reinterpret_cast<volatile uint8_t*>(
+        reinterpret_cast<uintptr_t>(const_cast<VortexCxlArgSlotHeader*>(slot)) +
+        sizeof(VortexCxlArgSlotHeader));
 }
 
 template <typename T>
@@ -923,6 +942,85 @@ static uint32_t vortex_cxl_run_job(volatile uint8_t* control,
 }
 
 } // namespace
+
+extern "C" int vortex_cxl_submit_job_mmio(void* control_window,
+                                          uint32_t job_id,
+                                          const void* arg_data,
+                                          uint64_t arg_len,
+                                          uint64_t seq,
+                                          uint32_t flags) {
+    if (!control_window) return VORTEX_ERROR_INVALID;
+    if (job_id == VORTEX_CXL_JOB_NOP || job_id > VORTEX_CXL_JOB_CALL)
+        return VORTEX_ERROR_INVALID;
+    if (arg_len > VORTEX_CXL_ARG_PAYLOAD_BYTES)
+        return VORTEX_ERROR_INVALID;
+    if (arg_len != 0 && !arg_data)
+        return VORTEX_ERROR_INVALID;
+
+    static std::atomic<uint64_t> next_seq{1};
+    uint64_t commit_seq = seq ? seq : next_seq.fetch_add(1, std::memory_order_relaxed);
+    if (commit_seq == 0) {
+        commit_seq = next_seq.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    auto* control = reinterpret_cast<volatile uint8_t*>(control_window);
+    auto* slot = vortex_cxl_arg_slot(control, job_id);
+    if (!slot) return VORTEX_ERROR_INVALID;
+
+    if (arg_len != 0) {
+        vortex_cxl_store_bytes(vortex_cxl_mutable_arg_payload(slot), arg_data, arg_len);
+    }
+
+    VortexCxlArgSlotHeader header = {
+        VORTEX_CXL_JOB_MAGIC,
+        VORTEX_CXL_JOB_VERSION,
+        job_id,
+        commit_seq,
+        arg_len,
+    };
+    vortex_cxl_store_bytes(slot, &header, sizeof(header));
+    vortex_cxl_fence();
+
+    VortexCxlDoorbell doorbell = {
+        VORTEX_CXL_JOB_MAGIC,
+        VORTEX_CXL_JOB_VERSION,
+        job_id,
+        flags,
+        0,
+        commit_seq,
+    };
+    vortex_cxl_store_bytes(control + VORTEX_CXL_DOORBELL_OFF,
+                           &doorbell,
+                           sizeof(doorbell));
+    vortex_cxl_fence();
+
+    return VORTEX_SUCCESS;
+}
+
+extern "C" int vortex_cxl_submit_call_mmio(void* control_window,
+                                           uint64_t seq,
+                                           void* func_ptr,
+                                           void** operands,
+                                           uint32_t num_operands,
+                                           void* completion_ptr) {
+    if (!func_ptr) return VORTEX_ERROR_INVALID;
+    if (num_operands != 0 && !operands) return VORTEX_ERROR_INVALID;
+
+    VortexCxlCallJob job = {
+        reinterpret_cast<uint64_t>(func_ptr),
+        reinterpret_cast<uint64_t>(operands),
+        reinterpret_cast<uint64_t>(completion_ptr),
+        num_operands,
+        0,
+    };
+
+    return vortex_cxl_submit_job_mmio(control_window,
+                                      VORTEX_CXL_JOB_CALL,
+                                      &job,
+                                      sizeof(job),
+                                      seq,
+                                      0);
+}
 
 extern "C" void __vortex_install_cacheline(void* addr,
                                            uint64_t size,

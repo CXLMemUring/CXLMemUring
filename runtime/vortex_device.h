@@ -70,6 +70,10 @@ typedef enum {
 #define VORTEX_ERROR_TIMEOUT    -5
 #define VORTEX_ERROR_INVALID    -6
 
+// CXL Type-2 MMIO control window layout.  The first 8KB window is shared with
+// the device-side firmware service in vortex_device.cpp.
+#define VORTEX_CXL_MMIO_CONTROL_BYTES 0x2000
+
 // ============================================================================
 // Device Management
 // ============================================================================
@@ -138,6 +142,28 @@ int vortex_device_wait(vortex_device_h device, uint64_t timeout_ms);
 
 // Synchronize device (blocking)
 int vortex_device_synchronize(vortex_device_h device);
+
+// ============================================================================
+// CXL Type-2 MMIO offload submission
+// ============================================================================
+
+// Stage a firmware job into a CXL-visible MMIO/control window and ring the
+// doorbell.  `seq == 0` asks the runtime to allocate a monotonic sequence.
+int vortex_cxl_submit_job_mmio(void* control_window,
+                               uint32_t job_id,
+                               const void* arg_data,
+                               uint64_t arg_len,
+                               uint64_t seq,
+                               uint32_t flags);
+
+// Convenience wrapper for the generic device call job:
+//   func_ptr(operands, num_operands, completion_ptr)
+int vortex_cxl_submit_call_mmio(void* control_window,
+                                uint64_t seq,
+                                void* func_ptr,
+                                void** operands,
+                                uint32_t num_operands,
+                                void* completion_ptr);
 
 // ============================================================================
 // Performance and Debugging

@@ -259,6 +259,26 @@ extern "C" {
     // Loops over [addr, addr+size) in 64-byte increments.
     void cira_install_cacheline_x86(void* addr, uint64_t size, int cache_level);
 
+    // Allocate/free a 64-byte-aligned host LLC tile used as the landing buffer
+    // for CXL cacheline delivery.  The tile owns an internal completion line
+    // that can be waited on with cira_llc_tile_get_mwait().
+    void* cira_llc_tile_alloc(uint64_t size);
+    void cira_llc_tile_free(void* tile);
+
+    // Return the tile's DCOH completion cacheline so device firmware can signal
+    // tile readiness, or nullptr if the pointer is not a runtime tile.
+    void* cira_llc_tile_future(void* tile);
+
+    // Copy a cacheline range from CXL memory into the LLC tile, install the
+    // destination lines into LLC, and mark either completion_ptr or the tile's
+    // internal future ready.
+    void* cira_llc_tile_install_from_cxl(void* tile, const void* cxl_addr,
+                                         uint64_t size, void* completion_ptr);
+
+    // Wait on the tile completion cacheline using the same MONITOR/UMWAIT path
+    // as cira_future_await(), then return the tile data pointer.
+    void* cira_llc_tile_get_mwait(void* tile);
+
     // Evict cache lines from host cache hierarchy.
     // Uses CLDEMOTE (Granite Rapids+) to move from L1->LLC, or CLFLUSHOPT
     // for full eviction. Loops over [addr, addr+size) in 64-byte increments.
