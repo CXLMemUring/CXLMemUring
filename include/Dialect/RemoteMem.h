@@ -22,6 +22,7 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -31,7 +32,6 @@
 #include "llvm/Support/PointerLikeTypeTraits.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "Conversion/CIRA.h"
 #include "Dialect/RemoteMemTypeLower.h"
 #include "Dialect/RemoteMemDialect.h"
 #include "Dialect/RemoteMemRef.h"
