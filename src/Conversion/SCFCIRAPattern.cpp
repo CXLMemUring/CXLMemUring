@@ -16,6 +16,21 @@
 using namespace mlir;
 using namespace mlir::cira;
 
+namespace {
+template <typename RewriterT>
+void applyRegionSignatureConversion(RewriterT &rewriter, Region &region,
+                                    TypeConverter::SignatureConversion &conversion) {
+    // MLIR has used both block-based and region-based overloads for this API.
+    if constexpr (requires(RewriterT &r, Region *regionPtr, TypeConverter::SignatureConversion &sig) {
+                      r.applySignatureConversion(regionPtr, sig);
+                  }) {
+        rewriter.applySignatureConversion(&region, conversion);
+    } else {
+        rewriter.applySignatureConversion(&region.front(), conversion);
+    }
+}
+} // namespace
+
 // ============================================================================
 // SCF disaggregation
 //==============================================================================
@@ -47,10 +62,10 @@ class SCFWhileDisagg : public OpConversionPattern<scf::WhileOp> {
         auto newWhileOp = rewriter.create<scf::WhileOp>(op.getLoc(), resultTypes, adaptor.getOperands());
 
         rewriter.inlineRegionBefore(op.getBefore(), newWhileOp.getBefore(), newWhileOp.getBefore().end());
-        rewriter.applySignatureConversion(&newWhileOp.getBefore().front(), beforeArgs);
+        applyRegionSignatureConversion(rewriter, newWhileOp.getBefore(), beforeArgs);
 
         rewriter.inlineRegionBefore(op.getAfter(), newWhileOp.getAfter(), newWhileOp.getAfter().end());
-        rewriter.applySignatureConversion(&newWhileOp.getAfter().front(), afterArgs);
+        applyRegionSignatureConversion(rewriter, newWhileOp.getAfter(), afterArgs);
 
         rewriter.replaceOp(op, newWhileOp.getResults());
         return mlir::success();
@@ -76,7 +91,7 @@ class SCFForOpDisagg : public OpConversionPattern<scf::ForOp> {
         // delete it before moving original block into the new loop body
         // newForOp.getBody()->erase();
         rewriter.inlineRegionBefore(op.getBodyRegion(), newForOp.getBodyRegion(), newForOp.getBodyRegion().end());
-        rewriter.applySignatureConversion(&newForOp.getBodyRegion().front(), result);
+        applyRegionSignatureConversion(rewriter, newForOp.getBodyRegion(), result);
         rewriter.replaceOp(op, newForOp.getResults());
         return mlir::success();
     }
