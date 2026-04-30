@@ -1,52 +1,52 @@
 {
   "experiment": "gapbs_heterogeneous_profiling",
-  "timestamp": "2025-12-22T03:33:31+00:00",
+  "timestamp": "2026-03-28T04:15:21+00:00",
   "graph_scale": 10,
   "benchmarks": {
     "bc": {
-      "x86_time_ms": 12,
-      "vortex_time_ns": 913575,
-      "injected_time_ms": 165,
+      "x86_time_ms": 11,
+      "vortex_time_ns": 954255,
+      "injected_time_ms": 163,
       "kernels": "BFSIter,BCUpdate",
       "profile_generated": true
     }
 ,
     "bfs": {
-      "x86_time_ms": 20,
-      "vortex_time_ns": 739345,
-      "injected_time_ms": 87,
+      "x86_time_ms": 24,
+      "vortex_time_ns": 754990,
+      "injected_time_ms": 78,
       "kernels": "BUStep,TDStep",
       "profile_generated": true
     }
 ,
     "cc_sv": {
-      "x86_time_ms": 15,
-      "vortex_time_ns": 503815,
+      "x86_time_ms": 10,
+      "vortex_time_ns": 556620,
       "injected_time_ms": 83,
       "kernels": "SV_CC",
       "profile_generated": true
     }
 ,
     "pr": {
-      "x86_time_ms": 15,
-      "vortex_time_ns": 359135,
-      "injected_time_ms": 27,
+      "x86_time_ms": 26,
+      "vortex_time_ns": 357345,
+      "injected_time_ms": 38,
       "kernels": "PageRankPull",
       "profile_generated": true
     }
 ,
     "pr_spmv": {
-      "x86_time_ms": 34,
-      "vortex_time_ns": 303990,
-      "injected_time_ms": 26,
+      "x86_time_ms": 12,
+      "vortex_time_ns": 369985,
+      "injected_time_ms": 37,
       "kernels": "SpMV",
       "profile_generated": true
     }
 ,
     "tc": {
-      "x86_time_ms": 46,
-      "vortex_time_ns": 857990,
-      "injected_time_ms": 44,
+      "x86_time_ms": 29,
+      "vortex_time_ns": 889630,
+      "injected_time_ms": 37,
       "kernels": "OrderedCount,OrderedCountIntersect",
       "profile_generated": true
     }

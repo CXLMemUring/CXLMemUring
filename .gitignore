@@ -1,3 +1,29 @@
+profile_*
+*.th*
+
+# Generated profiling and benchmark artifacts
+profile_results/vtune/
+profile_results/**/dbfarm/
+profile_results/**/tpcc_data/
+*.vtune
+*.vtuneproj
+vtune.tar.gz
+bench/gapbs/r[0-9]*hs/
+bench/gapbs/benchmark/graphs/
+bench/gapbs/benchmark/out/
+bench/*/build/
+bench/DataFrame/build_orig/
+bin/*/riscv64-unknown-linux-gnu/
+
+# Linux kernel module build products
+driver/*.o
+driver/*.ko
+driver/*.mod
+driver/*.mod.c
+driver/.*.cmd
+driver/Module.symvers
+driver/modules.order
+
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles

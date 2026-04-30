@@ -13,6 +13,7 @@ namespace mlir {
 
 std::unique_ptr<Pass> createRemoteMemDPSPass();
 std::unique_ptr<Pass> createRemoteMemSearchRemotePass();
+
 #define GEN_PASS_REGISTRATION
 #include "Dialect/Transforms/Passes.h.inc"
 } // namespace mlir

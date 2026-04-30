@@ -3,16 +3,16 @@
   "target": "x86_64",
   "benchmark": "tc",
   "graph_scale": 10,
-  "execution_time_ms": 46,
+  "execution_time_ms": 29,
   "num_trials": 3,
   "kernels": {
     "OrderedCount": {
-      "estimated_time_ms": 23,
+      "estimated_time_ms": 14,
       "offload_candidate": true
     }
 ,
     "OrderedCountIntersect": {
-      "estimated_time_ms": 23,
+      "estimated_time_ms": 14,
       "offload_candidate": true
     }
 

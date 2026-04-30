@@ -10,8 +10,8 @@
     {
       "region_id": 0,
       "region_name": "data_generation",
-      "baseline_time_ms": 84795.4,
-      "host_independent_work_ns": 25438620000.0,
+      "baseline_time_ms": 85943.9,
+      "host_independent_work_ns": 25783170000.0,
       "vortex_time_ns": 16630.0,
       "vortex_cycles": 3326,
       "injection_delay_ns": 0,
@@ -23,8 +23,8 @@
     {
       "region_id": 1,
       "region_name": "mean_calculation",
-      "baseline_time_ms": 61.791,
-      "host_independent_work_ns": 18537300.0,
+      "baseline_time_ms": 19.810499999999998,
+      "host_independent_work_ns": 5943149.999999999,
       "vortex_time_ns": 3325.0,
       "vortex_cycles": 665,
       "injection_delay_ns": 0,
@@ -36,8 +36,8 @@
     {
       "region_id": 2,
       "region_name": "variance_calculation",
-      "baseline_time_ms": 61.791,
-      "host_independent_work_ns": 18537300.0,
+      "baseline_time_ms": 19.810499999999998,
+      "host_independent_work_ns": 5943149.999999999,
       "vortex_time_ns": 4985.0,
       "vortex_cycles": 997,
       "injection_delay_ns": 0,
@@ -49,8 +49,8 @@
     {
       "region_id": 3,
       "region_name": "correlation_calculation",
-      "baseline_time_ms": 82.388,
-      "host_independent_work_ns": 24716400.0,
+      "baseline_time_ms": 26.414,
+      "host_independent_work_ns": 7924200.0,
       "vortex_time_ns": 4985.0,
       "vortex_cycles": 997,
       "injection_delay_ns": 0,
@@ -62,8 +62,8 @@
     {
       "region_id": 4,
       "region_name": "selection",
-      "baseline_time_ms": 474.44599999999997,
-      "host_independent_work_ns": 142333799.99999997,
+      "baseline_time_ms": 515.76,
+      "host_independent_work_ns": 154728000.0,
       "vortex_time_ns": 3325.0,
       "vortex_cycles": 665,
       "injection_delay_ns": 0,
@@ -74,10 +74,10 @@
     }
   ],
   "summary": {
-    "total_time_ms": 85475.81599999999,
-    "data_generation_ms": 84795.4,
-    "calculation_ms": 205.97,
-    "selection_ms": 474.44599999999997,
+    "total_time_ms": 86525.69499999999,
+    "data_generation_ms": 85943.9,
+    "calculation_ms": 66.035,
+    "selection_ms": 515.76,
     "vortex_total_cycles": 6652,
     "vortex_total_time_ns": 33260.0
   }

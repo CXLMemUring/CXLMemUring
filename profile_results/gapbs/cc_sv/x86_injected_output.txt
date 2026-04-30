@@ -1,10 +1,10 @@
-Generate Time:       0.00586
-Build Time:          0.00092
+Generate Time:       0.00816
+Build Time:          0.00085
 Graph has 1024 nodes and 10496 undirected edges for degree: 10
 Shiloach-Vishkin took 2 iterations
-Trial Time:          0.00024
+Trial Time:          0.00040
 Shiloach-Vishkin took 2 iterations
-Trial Time:          0.00023
+Trial Time:          0.00040
 Shiloach-Vishkin took 2 iterations
-Trial Time:          0.00021
-Average Time:        0.00023
+Trial Time:          0.00038
+Average Time:        0.00039

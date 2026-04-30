@@ -3,11 +3,11 @@
   "target": "x86_64",
   "benchmark": "cc_sv",
   "graph_scale": 10,
-  "execution_time_ms": 15,
+  "execution_time_ms": 10,
   "num_trials": 3,
   "kernels": {
     "SV_CC": {
-      "estimated_time_ms": 15,
+      "estimated_time_ms": 10,
       "offload_candidate": true
     }
 

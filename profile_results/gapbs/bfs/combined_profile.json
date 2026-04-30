@@ -5,13 +5,13 @@
   "baseline": {
     "profile_type": "bfs_baseline",
     "target": "x86_64",
-    "execution_time_ms": 20
+    "execution_time_ms": 24
   },
   "vortex": {
     "profile_type": "vortex_estimated",
     "target": "riscv_vortex",
     "timing": {
-      "kernel_latency_ns": 739345,
+      "kernel_latency_ns": 754990,
       "total_kernel_time_ms": 0,
       "h2d_latency_ns": 10000000,
       "d2h_latency_ns": 5000000
@@ -22,12 +22,12 @@
     }
   },
   "timing_injection": {
-    "injected_time_ms": 87,
-    "slowdown_vs_baseline": 4.350
+    "injected_time_ms": 78,
+    "slowdown_vs_baseline": 3.250
   },
   "heterogeneous_estimate": {
-    "estimated_time_ms": 110,
-    "speedup_vs_baseline": .181,
+    "estimated_time_ms": 112,
+    "speedup_vs_baseline": .214,
     "kernel_calls": 50,
     "data_transfer_overhead_ms": 100
   },

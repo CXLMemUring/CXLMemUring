@@ -10,43 +10,43 @@
     {
       "region_id": 0,
       "region_name": "data_generation",
-      "execution_time_ms": 84795.4,
+      "execution_time_ms": 85943.9,
       "kernel_calls": 3,
       "parallelizable": true
     },
     {
       "region_id": 1,
       "region_name": "mean_calculation",
-      "execution_time_ms": 61.791,
+      "execution_time_ms": 19.810499999999998,
       "kernel_calls": 1,
       "parallelizable": true
     },
     {
       "region_id": 2,
       "region_name": "variance_calculation",
-      "execution_time_ms": 61.791,
+      "execution_time_ms": 19.810499999999998,
       "kernel_calls": 1,
       "parallelizable": true
     },
     {
       "region_id": 3,
       "region_name": "correlation_calculation",
-      "execution_time_ms": 82.388,
+      "execution_time_ms": 26.414,
       "kernel_calls": 1,
       "parallelizable": true
     },
     {
       "region_id": 4,
       "region_name": "selection",
-      "execution_time_ms": 474.44599999999997,
+      "execution_time_ms": 515.76,
       "kernel_calls": 1,
       "parallelizable": true
     }
   ],
   "summary": {
-    "total_time_ms": 85475.81599999999,
-    "data_generation_ms": 84795.4,
-    "calculation_ms": 205.97,
-    "selection_ms": 474.44599999999997
+    "total_time_ms": 86525.69499999999,
+    "data_generation_ms": 85943.9,
+    "calculation_ms": 66.035,
+    "selection_ms": 515.76
   }
 }

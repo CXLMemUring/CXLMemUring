@@ -1,10 +1,10 @@
-Generate Time:       0.00640
-Build Time:          0.00105
+Generate Time:       0.00586
+Build Time:          0.00094
 Graph has 1024 nodes and 10496 undirected edges for degree: 10
-Relabel:             0.00412
-Trial Time:          0.01105
-Relabel:             0.00436
-Trial Time:          0.00900
-Relabel:             0.00085
-Trial Time:          0.00228
-Average Time:        0.00744
+Relabel:             0.00139
+Trial Time:          0.00361
+Relabel:             0.00136
+Trial Time:          0.00358
+Relabel:             0.00108
+Trial Time:          0.00251
+Average Time:        0.00323

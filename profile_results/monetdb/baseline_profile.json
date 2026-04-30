@@ -1,7 +1,7 @@
 {
   "profile_type": "monetdb_tpcc_baseline",
   "version": "1.0",
-  "timestamp": "2025-12-27T22:47:21.252963",
+  "timestamp": "2026-03-28T04:16:58.062078",
   "configuration": {
     "warehouses": 1,
     "scale": 0.1,
@@ -15,23 +15,23 @@
       "region_id": 0,
       "region_name": "tpcc_new_order",
       "transaction_type": "new_order",
-      "invocation_count": 1457,
-      "host_independent_work_ns": 7006,
+      "invocation_count": 883,
+      "host_independent_work_ns": 11971,
       "baseline_timing": {
-        "avg_latency_ms": 23.353428732637028,
-        "min_latency_ms": 12.218475341796875,
-        "max_latency_ms": 109.21120643615723,
-        "total_time_ms": 34025.94566345215
+        "avg_latency_ms": 39.90529914674511,
+        "min_latency_ms": 17.353057861328125,
+        "max_latency_ms": 83.81056785583496,
+        "total_time_ms": 35236.37914657593
       },
       "vortex_timing": {
-        "total_cycles": 4670,
-        "total_time_ns": 23350,
-        "compute_cycles": 1401,
-        "memory_stall_cycles": 3269,
+        "total_cycles": 7980,
+        "total_time_ns": 39900,
+        "compute_cycles": 2394,
+        "memory_stall_cycles": 5586,
         "cache_hits": 0,
         "cache_misses": 0
       },
-      "injection_delay_ns": 16344,
+      "injection_delay_ns": 27929,
       "latency_hidden": false,
       "optimal_prefetch_depth": 16
     },
@@ -39,23 +39,23 @@
       "region_id": 1,
       "region_name": "tpcc_payment",
       "transaction_type": "payment",
-      "invocation_count": 1422,
-      "host_independent_work_ns": 4227,
+      "invocation_count": 844,
+      "host_independent_work_ns": 6693,
       "baseline_timing": {
-        "avg_latency_ms": 14.092912653830483,
-        "min_latency_ms": 8.936405181884766,
-        "max_latency_ms": 58.73990058898926,
-        "total_time_ms": 20040.12179374695
+        "avg_latency_ms": 22.312030973027667,
+        "min_latency_ms": 10.732173919677734,
+        "max_latency_ms": 34.84010696411133,
+        "total_time_ms": 18831.35414123535
       },
       "vortex_timing": {
-        "total_cycles": 2818,
-        "total_time_ns": 14090,
-        "compute_cycles": 845,
-        "memory_stall_cycles": 1973,
+        "total_cycles": 4461,
+        "total_time_ns": 22305,
+        "compute_cycles": 1338,
+        "memory_stall_cycles": 3123,
         "cache_hits": 0,
         "cache_misses": 0
       },
-      "injection_delay_ns": 9863,
+      "injection_delay_ns": 15612,
       "latency_hidden": false,
       "optimal_prefetch_depth": 16
     },
@@ -63,23 +63,23 @@
       "region_id": 2,
       "region_name": "tpcc_order_status",
       "transaction_type": "order_status",
-      "invocation_count": 135,
-      "host_independent_work_ns": 3397,
+      "invocation_count": 62,
+      "host_independent_work_ns": 5490,
       "baseline_timing": {
-        "avg_latency_ms": 11.32642074867531,
-        "min_latency_ms": 6.710529327392578,
-        "max_latency_ms": 22.806644439697266,
-        "total_time_ms": 1529.066801071167
+        "avg_latency_ms": 18.300098757590018,
+        "min_latency_ms": 10.123252868652344,
+        "max_latency_ms": 24.52397346496582,
+        "total_time_ms": 1134.606122970581
       },
       "vortex_timing": {
-        "total_cycles": 2264,
-        "total_time_ns": 11320,
-        "compute_cycles": 679,
-        "memory_stall_cycles": 1585,
+        "total_cycles": 3660,
+        "total_time_ns": 18300,
+        "compute_cycles": 1098,
+        "memory_stall_cycles": 2562,
         "cache_hits": 0,
         "cache_misses": 0
       },
-      "injection_delay_ns": 7923,
+      "injection_delay_ns": 12810,
       "latency_hidden": false,
       "optimal_prefetch_depth": 16
     },
@@ -87,23 +87,23 @@
       "region_id": 3,
       "region_name": "tpcc_delivery",
       "transaction_type": "delivery",
-      "invocation_count": 137,
-      "host_independent_work_ns": 5768,
+      "invocation_count": 88,
+      "host_independent_work_ns": 10831,
       "baseline_timing": {
-        "avg_latency_ms": 19.22951301519018,
-        "min_latency_ms": 13.434171676635742,
-        "max_latency_ms": 41.44597053527832,
-        "total_time_ms": 2634.4432830810547
+        "avg_latency_ms": 36.105743863365866,
+        "min_latency_ms": 17.42839813232422,
+        "max_latency_ms": 65.75608253479004,
+        "total_time_ms": 3177.3054599761963
       },
       "vortex_timing": {
-        "total_cycles": 3845,
-        "total_time_ns": 19225,
-        "compute_cycles": 1153,
-        "memory_stall_cycles": 2692,
+        "total_cycles": 7220,
+        "total_time_ns": 36100,
+        "compute_cycles": 2166,
+        "memory_stall_cycles": 5054,
         "cache_hits": 0,
         "cache_misses": 0
       },
-      "injection_delay_ns": 13457,
+      "injection_delay_ns": 25269,
       "latency_hidden": false,
       "optimal_prefetch_depth": 16
     },
@@ -111,31 +111,31 @@
       "region_id": 4,
       "region_name": "tpcc_stock_level",
       "transaction_type": "stock_level",
-      "invocation_count": 128,
-      "host_independent_work_ns": 3154,
+      "invocation_count": 70,
+      "host_independent_work_ns": 5091,
       "baseline_timing": {
-        "avg_latency_ms": 10.513605549931526,
-        "min_latency_ms": 6.617069244384766,
-        "max_latency_ms": 23.849010467529297,
-        "total_time_ms": 1345.7415103912354
+        "avg_latency_ms": 16.971329280308314,
+        "min_latency_ms": 8.875370025634766,
+        "max_latency_ms": 23.35381507873535,
+        "total_time_ms": 1187.993049621582
       },
       "vortex_timing": {
-        "total_cycles": 2101,
-        "total_time_ns": 10505,
-        "compute_cycles": 630,
-        "memory_stall_cycles": 1471,
+        "total_cycles": 3393,
+        "total_time_ns": 16965,
+        "compute_cycles": 1018,
+        "memory_stall_cycles": 2375,
         "cache_hits": 0,
         "cache_misses": 0
       },
-      "injection_delay_ns": 7351,
+      "injection_delay_ns": 11874,
       "latency_hidden": false,
       "optimal_prefetch_depth": 16
     }
   ],
   "summary": {
-    "total_transactions": 3279,
-    "tpm_total": 3277.4306485436696,
-    "new_order_tpm": 1456.3026699994289,
-    "avg_latency_ms": 18.16874627988489
+    "total_transactions": 1947,
+    "tpm_total": 1946.0198304509768,
+    "new_order_tpm": 882.5554752379109,
+    "avg_latency_ms": 30.594575203071205
   }
 }

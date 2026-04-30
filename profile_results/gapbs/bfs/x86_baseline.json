@@ -3,16 +3,16 @@
   "target": "x86_64",
   "benchmark": "bfs",
   "graph_scale": 10,
-  "execution_time_ms": 20,
+  "execution_time_ms": 24,
   "num_trials": 3,
   "kernels": {
     "BUStep": {
-      "estimated_time_ms": 10,
+      "estimated_time_ms": 12,
       "offload_candidate": true
     }
 ,
     "TDStep": {
-      "estimated_time_ms": 10,
+      "estimated_time_ms": 12,
       "offload_candidate": true
     }
 
