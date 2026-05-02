@@ -1252,9 +1252,23 @@ struct OffloadRegionOpLowering : public ConversionPattern {
 // Helper function for populating conversion patterns
 //===----------------------------------------------------------------------===//
 
+static void addCiraLLVMTypeConversions(LLVMTypeConverter &converter) {
+  converter.addConversion([](HandleType type) -> Type {
+    return LLVM::LLVMPointerType::get(type.getContext());
+  });
+  converter.addConversion([](FutureType type) -> Type {
+    return LLVM::LLVMPointerType::get(type.getContext());
+  });
+  converter.addConversion([](StreamType type) -> Type {
+    return LLVM::LLVMPointerType::get(type.getContext());
+  });
+}
+
 static void populateCiraToLLVMConversionPatternsImpl(
     LLVMTypeConverter &converter, RewritePatternSet &patterns,
     TargetArchitecture arch) {
+  addCiraLLVMTypeConversions(converter);
+
   // Legacy patterns
   patterns.add<LoadEdgeOpLowering, EvictEdgeOpLowering>(converter, arch);
   patterns.add<LoadNodeOpLowering, GetPaddrOpLowering, CallOpLowering>(converter);

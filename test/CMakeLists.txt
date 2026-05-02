@@ -28,6 +28,38 @@ endif()
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/test_ctest_out)
 set(_CIRA ${CMAKE_BINARY_DIR}/bin/cira)
 set(_OUT ${CMAKE_BINARY_DIR}/test_ctest_out)
+
+add_executable(cira_runtime_llc_tile_mock runtime_llc_tile_mock.cpp)
+target_include_directories(cira_runtime_llc_tile_mock PRIVATE
+  ${CMAKE_SOURCE_DIR}/runtime/include
+)
+target_link_libraries(cira_runtime_llc_tile_mock PRIVATE cira_runtime)
+add_test(NAME runtime_llc_tile_mock COMMAND cira_runtime_llc_tile_mock)
+
+add_test(
+  NAME llc_tile_lowering
+  COMMAND ${BASH_EXECUTABLE} -lc "\
+    ${_CIRA} ${CMAKE_SOURCE_DIR}/test/mlir/check_llc_tile_lowering.mlir --convert-cira-to-llvm-x86 > ${_OUT}/llc_tile_lowering.mlir && \
+    grep -q 'llvm.call @cira_llc_tile_alloc' ${_OUT}/llc_tile_lowering.mlir && \
+    grep -q 'llvm.call @cira_install_cacheline_x86' ${_OUT}/llc_tile_lowering.mlir && \
+    grep -q 'llvm.call @cira_llc_tile_free' ${_OUT}/llc_tile_lowering.mlir && \
+    ! grep -q 'llvm.call @malloc' ${_OUT}/llc_tile_lowering.mlir && \
+    ! grep -q 'llvm.call @free' ${_OUT}/llc_tile_lowering.mlir"
+)
+
+add_test(
+  NAME llc_slice_synthetic_100
+  COMMAND ${BASH_EXECUTABLE} -lc "\
+    ${_CIRA} ${CMAKE_SOURCE_DIR}/test/mlir/llc_slice_synthetic_100.mlir --convert-cira-to-llvm-x86 -o ${_OUT}/llc_slice_synthetic_100_lowered.mlir && \
+    grep -c 'llvm.call @cira_llc_tile_alloc' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 100 && \
+    grep -c 'llvm.call @cira_llc_tile_free' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 100 && \
+    grep -c 'llvm.call @cira_install_cacheline_x86' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 100 && \
+    grep -c 'llvm.call @cira_evict_hint_x86' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 100 && \
+    grep -c 'llvm.call @cira_phase_barrier' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 100 && \
+    grep -c 'llvm.call @cira_future_alloc' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 200 && \
+    grep -c 'llvm.call @cira_future_await' ${_OUT}/llc_slice_synthetic_100_lowered.mlir | grep -qx 200"
+)
+
 function(add_mlir_pipeline_test name in)
   add_test(
     NAME ${name}
