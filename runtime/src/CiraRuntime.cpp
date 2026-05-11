@@ -12,8 +12,11 @@
 #include <cerrno>
 #include <cinttypes>
 #include <limits>
+#include <new>
+#include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -26,6 +29,283 @@
 
 namespace cira {
 namespace runtime {
+
+namespace {
+
+struct RegisteredCiraRegion {
+    uintptr_t virtual_base;
+    uint64_t size;
+    uintptr_t device_base;
+    uint64_t flags;
+};
+
+std::mutex g_region_mutex;
+std::vector<RegisteredCiraRegion> g_registered_regions;
+
+uint64_t parse_env_u64_default(const char* name, uint64_t fallback) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+
+    char* end = nullptr;
+    errno = 0;
+    uint64_t parsed = std::strtoull(value, &end, 0);
+    if (errno != 0 || end == value) return fallback;
+    return parsed;
+}
+
+bool env_equals(const char* name, const char* expected) {
+    const char* value = std::getenv(name);
+    return value && std::strcmp(value, expected) == 0;
+}
+
+int register_linear_region(void* virtual_base, uint64_t size,
+                           uint64_t device_base, uint64_t flags) {
+    if (!virtual_base || size == 0) return -EINVAL;
+
+    RegisteredCiraRegion region{
+        reinterpret_cast<uintptr_t>(virtual_base),
+        size,
+        static_cast<uintptr_t>(device_base),
+        flags,
+    };
+
+    std::lock_guard<std::mutex> lock(g_region_mutex);
+    for (auto& existing : g_registered_regions) {
+        if (existing.virtual_base == region.virtual_base) {
+            existing = region;
+            return 0;
+        }
+    }
+
+    g_registered_regions.push_back(region);
+    return 0;
+}
+
+int unregister_linear_region(void* virtual_base) {
+    if (!virtual_base) return -EINVAL;
+
+    uintptr_t base = reinterpret_cast<uintptr_t>(virtual_base);
+    std::lock_guard<std::mutex> lock(g_region_mutex);
+    auto it = std::remove_if(g_registered_regions.begin(),
+                             g_registered_regions.end(),
+                             [base](const RegisteredCiraRegion& region) {
+                                 return region.virtual_base == base;
+                             });
+    if (it == g_registered_regions.end()) return -ENOENT;
+    g_registered_regions.erase(it, g_registered_regions.end());
+    return 0;
+}
+
+bool translate_registered_region(void* ptr, uintptr_t* translated) {
+    if (!ptr || !translated) return false;
+
+    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    std::lock_guard<std::mutex> lock(g_region_mutex);
+    for (const auto& region : g_registered_regions) {
+        if (addr < region.virtual_base) continue;
+        uint64_t offset = static_cast<uint64_t>(addr - region.virtual_base);
+        if (offset >= region.size) continue;
+
+        *translated = static_cast<uintptr_t>(region.device_base + offset);
+        return true;
+    }
+    return false;
+}
+
+uint32_t parity64(uint64_t value) {
+    value ^= value >> 32;
+    value ^= value >> 16;
+    value ^= value >> 8;
+    value ^= value >> 4;
+    value &= 0xf;
+    return (0x6996 >> value) & 1;
+}
+
+std::vector<uint64_t> parse_mask_list(const char* text) {
+    std::vector<uint64_t> masks;
+    if (!text) return masks;
+
+    const char* cursor = text;
+    while (*cursor) {
+        while (*cursor == ',' || *cursor == ' ' || *cursor == '\t')
+            ++cursor;
+        if (!*cursor) break;
+
+        char* end = nullptr;
+        errno = 0;
+        uint64_t mask = std::strtoull(cursor, &end, 0);
+        if (errno != 0 || end == cursor) break;
+        masks.push_back(mask);
+        cursor = end;
+    }
+    return masks;
+}
+
+struct cira_cxl_cache_translate {
+    uint64_t user_va;
+    uint64_t length;
+    uint64_t flags;
+    uint64_t device_addr;
+    uint64_t host_phys_addr;
+    uint32_t cache_id;
+    uint32_t snoop_id;
+};
+
+constexpr unsigned long kDefaultCxlCacheTranslateIoctl =
+    _IOWR('C', 0xCA, cira_cxl_cache_translate);
+
+bool kernel_cxl_translate_addr(void* ptr, uintptr_t* translated) {
+    if (!ptr || !translated) return false;
+
+    const char* dev_path = std::getenv("CIRA_CXL_CACHE_DEV");
+    if (!dev_path || !*dev_path)
+        dev_path = "/dev/cxl/cache0";
+
+    int fd = open(dev_path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return false;
+
+    cira_cxl_cache_translate req = {};
+    req.user_va = reinterpret_cast<uintptr_t>(ptr);
+    req.length = parse_env_u64_default("CIRA_CXL_TRANSLATE_LEN", 64);
+    req.flags = parse_env_u64_default("CIRA_CXL_TRANSLATE_FLAGS", 0);
+
+    unsigned long ioctl_nr = static_cast<unsigned long>(
+        parse_env_u64_default("CIRA_CXL_TRANSLATE_IOCTL",
+                      kDefaultCxlCacheTranslateIoctl));
+
+    int rc = ioctl(fd, ioctl_nr, &req);
+    close(fd);
+    if (rc < 0) return false;
+
+    if (req.device_addr)
+        *translated = static_cast<uintptr_t>(req.device_addr);
+    else if (req.host_phys_addr)
+        *translated = static_cast<uintptr_t>(req.host_phys_addr);
+    else
+        return false;
+    return true;
+}
+
+uintptr_t pagemap_physical_addr(const void* ptr) {
+    if (!ptr) return 0;
+
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return 0;
+
+    uintptr_t virt = reinterpret_cast<uintptr_t>(ptr);
+    uint64_t vpn = virt / static_cast<uint64_t>(page_size);
+    uint64_t page_offset = virt % static_cast<uint64_t>(page_size);
+    off_t pagemap_offset = static_cast<off_t>(vpn * sizeof(uint64_t));
+
+    int fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+
+    uint64_t entry = 0;
+    ssize_t nread = pread(fd, &entry, sizeof(entry), pagemap_offset);
+    close(fd);
+    if (nread != static_cast<ssize_t>(sizeof(entry))) return 0;
+
+    constexpr uint64_t kPresent = 1ULL << 63;
+    constexpr uint64_t kPfnMask = (1ULL << 55) - 1;
+    if ((entry & kPresent) == 0) return 0;
+
+    uint64_t pfn = entry & kPfnMask;
+    if (pfn == 0) return 0;
+    return static_cast<uintptr_t>(pfn * static_cast<uint64_t>(page_size) +
+                                  page_offset);
+}
+
+uintptr_t address_basis_for_runtime_token(const void* ptr) {
+    uintptr_t virt = reinterpret_cast<uintptr_t>(ptr);
+    if (env_equals("CIRA_PADDR_SOURCE", "virtual"))
+        return virt;
+
+    uintptr_t phys = pagemap_physical_addr(ptr);
+    return phys != 0 ? phys : virt;
+}
+
+uintptr_t reverse_engineered_llc_addr(void* addr) {
+    uintptr_t basis = address_basis_for_runtime_token(addr);
+
+    uint64_t line_bits = parse_env_u64_default("CIRA_LLC_LINE_BITS", 6);
+    uint64_t set_bits = parse_env_u64_default("CIRA_LLC_SET_BITS", 11);
+    uint64_t slice_shift = parse_env_u64_default("CIRA_LLC_SLICE_SHIFT", 56);
+    uint64_t num_slices = parse_env_u64_default("CIRA_LLC_SLICES", 1);
+
+    if (line_bits >= 63) line_bits = 6;
+    if (set_bits >= 32) set_bits = 11;
+    if (slice_shift >= 63) slice_shift = 56;
+    if (num_slices == 0) num_slices = 1;
+
+    uint64_t line_mask = (1ULL << line_bits) - 1;
+    uint64_t set_mask = (1ULL << set_bits) - 1;
+    uint64_t offset = basis & line_mask;
+    uint64_t set = (basis >> line_bits) & set_mask;
+    uint64_t tag = basis >> (line_bits + set_bits);
+
+    uint64_t slice = 0;
+    auto masks = parse_mask_list(std::getenv("CIRA_LLC_SLICE_MASKS"));
+    if (!masks.empty()) {
+        for (size_t bit = 0; bit < masks.size(); ++bit)
+            slice |= static_cast<uint64_t>(parity64(basis & masks[bit])) << bit;
+    } else if (num_slices > 1) {
+        slice = (basis >> line_bits) % num_slices;
+    }
+    slice %= num_slices;
+
+    uint64_t encoded = (tag << (set_bits + line_bits)) |
+                       (set << line_bits) | offset;
+    encoded |= (slice << slice_shift);
+    return static_cast<uintptr_t>(encoded);
+}
+
+uintptr_t translate_runtime_paddr(const char* field_name, void* node_data) {
+    (void)field_name;
+    if (!node_data) return 0;
+
+    const char* mode = std::getenv("CIRA_PADDR_MODE");
+    uintptr_t region_token = 0;
+
+    if (!mode || !*mode || std::strcmp(mode, "region") == 0 ||
+        std::strcmp(mode, "linear") == 0 ||
+        std::strcmp(mode, "device") == 0 ||
+        std::strcmp(mode, "driver") == 0 ||
+        std::strcmp(mode, "kernel") == 0) {
+        if (translate_registered_region(node_data, &region_token))
+            return region_token;
+        if (mode && (std::strcmp(mode, "region") == 0 ||
+                     std::strcmp(mode, "linear") == 0 ||
+                     std::strcmp(mode, "device") == 0))
+            return reverse_engineered_llc_addr(node_data);
+    }
+
+    uintptr_t kernel_token = 0;
+    if (!mode || !*mode || std::strcmp(mode, "driver") == 0 ||
+        std::strcmp(mode, "kernel") == 0) {
+        if (kernel_cxl_translate_addr(node_data, &kernel_token))
+            return kernel_token;
+        if (mode && (std::strcmp(mode, "driver") == 0 ||
+                     std::strcmp(mode, "kernel") == 0))
+            return reverse_engineered_llc_addr(node_data);
+    }
+
+    if (!mode || !*mode)
+        return reverse_engineered_llc_addr(node_data);
+
+    if (std::strcmp(mode, "llc") == 0)
+        return reverse_engineered_llc_addr(node_data);
+    if (std::strcmp(mode, "physical") == 0 ||
+        std::strcmp(mode, "pagemap") == 0) {
+        uintptr_t phys = pagemap_physical_addr(node_data);
+        return phys != 0 ? phys : reinterpret_cast<uintptr_t>(node_data);
+    }
+    if (std::strcmp(mode, "virtual") == 0)
+        return reinterpret_cast<uintptr_t>(node_data);
+
+    return reverse_engineered_llc_addr(node_data);
+}
+
+} // namespace
 
 // Implementation of the runtime system
 class CiraRuntimeImpl : public CiraRuntime {
@@ -138,9 +418,7 @@ public:
     }
 
     uintptr_t getPhysicalAddr(const char* field_name, void* node_data) override {
-        // In a real implementation, this would translate to physical address
-        // For now, return virtual address
-        return reinterpret_cast<uintptr_t>(node_data);
+        return translate_runtime_paddr(field_name, node_data);
     }
 
     void batchLoadEdges(RemoteMemRef* edge_ptr, size_t start_index,
@@ -1013,6 +1291,58 @@ extern "C" {
         return eng->getPhysicalAddr(field_name, node_data);
     }
 
+    int cira_register_linear_region(void* virtual_base, uint64_t size,
+                                    uint64_t device_base, uint64_t flags) {
+        return register_linear_region(virtual_base, size, device_base, flags);
+    }
+
+    int cira_unregister_linear_region(void* virtual_base) {
+        return unregister_linear_region(virtual_base);
+    }
+
+    uintptr_t cira_translate_registered_addr(void* addr) {
+        uintptr_t translated = 0;
+        return translate_registered_region(addr, &translated) ? translated : 0;
+    }
+
+    uintptr_t cira_translate_paddr(const char* field_name, void* node_data) {
+        return translate_runtime_paddr(field_name, node_data);
+    }
+
+    uintptr_t cira_translate_llc_addr(void* addr) {
+        return reverse_engineered_llc_addr(addr);
+    }
+
+    void cira_gapbs_region_marker(uint32_t benchmark_id, uint32_t region_id,
+                                  const void* addr, uint64_t bytes) {
+        uint64_t cache_level = 3;
+        parse_env_u64("CIRA_GAPBS_CACHE_LEVEL", cache_level);
+
+        if (addr && bytes &&
+            (env_flag_enabled("CIRA_GAPBS_PREFETCH") ||
+             env_flag_enabled("CIRA_GAPBS_INSTALL_CACHELINE"))) {
+            cira_install_cacheline_x86(const_cast<void*>(addr), bytes,
+                                       static_cast<int>(cache_level));
+        }
+
+        if (env_flag_enabled("CIRA_GAPBS_MARKER_ONLY"))
+            return;
+
+        void* completion = cira_future_alloc();
+        if (!completion) return;
+
+        void* operands[4] = {
+            reinterpret_cast<void*>(static_cast<uintptr_t>(benchmark_id)),
+            reinterpret_cast<void*>(static_cast<uintptr_t>(region_id)),
+            const_cast<void*>(addr),
+            reinterpret_cast<void*>(static_cast<uintptr_t>(bytes)),
+        };
+
+        cira_offload_submit(nullptr, operands, 4, completion);
+        (void)cira_future_await(completion);
+        cira_future_free(completion);
+    }
+
     void cira_offload_evict_edge(void* engine, void* edge_ptr, size_t index) {
         auto* eng = static_cast<OffloadEngine*>(engine);
         auto* ref = static_cast<RemoteMemRef*>(edge_ptr);
@@ -1263,11 +1593,53 @@ extern "C" {
     // Future management (DCOH-coherent completion tracking)
     // ====================================================================
 
-    // Global tracking of active futures for phase_barrier
-    static constexpr size_t MAX_ACTIVE_FUTURES = 256;
-    static void* active_futures[MAX_ACTIVE_FUTURES] = {};
-    static int num_active_futures = 0;
+    struct CiraFuturePool {
+        void* base = nullptr;
+        uint32_t depth = 0;
+        size_t bytes = 0;
+        bool registered = false;
+    };
+
+    // Global tracking of active in-flight futures for phase_barrier.
+    // Futures become active when armed or submitted, not merely allocated.
+    static std::vector<void*> active_futures;
     static std::mutex futures_mutex;
+
+    void track_active_future(void* completion_ptr) {
+        if (!completion_ptr) return;
+        std::lock_guard<std::mutex> lock(futures_mutex);
+        if (std::find(active_futures.begin(), active_futures.end(),
+                      completion_ptr) == active_futures.end()) {
+            active_futures.push_back(completion_ptr);
+        }
+    }
+
+    void untrack_active_future(void* completion_ptr) {
+        if (!completion_ptr) return;
+        std::lock_guard<std::mutex> lock(futures_mutex);
+        auto it = std::remove(active_futures.begin(), active_futures.end(),
+                              completion_ptr);
+        active_futures.erase(it, active_futures.end());
+    }
+
+    void untrack_future_range(void* base, size_t bytes) {
+        if (!base || bytes == 0) return;
+        uintptr_t begin = reinterpret_cast<uintptr_t>(base);
+        uintptr_t end = begin + bytes;
+        std::lock_guard<std::mutex> lock(futures_mutex);
+        auto it = std::remove_if(active_futures.begin(), active_futures.end(),
+            [begin, end](void* ptr) {
+                uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+                return addr >= begin && addr < end;
+            });
+        active_futures.erase(it, active_futures.end());
+    }
+
+    void* future_pool_entry(CiraFuturePool* pool, uint32_t index) {
+        if (!pool || !pool->base || index >= pool->depth) return nullptr;
+        return static_cast<uint8_t*>(pool->base) +
+               static_cast<size_t>(index) * CIRA_CACHELINE_BYTES;
+    }
 
     void* cira_future_alloc(void) {
         // Allocate 64-byte-aligned completion structure
@@ -1279,15 +1651,84 @@ extern "C" {
         // Zero-initialize (magic=0 means not ready)
         std::memset(ptr, 0, 64);
 
-        // Track for phase barrier
-        {
-            std::lock_guard<std::mutex> lock(futures_mutex);
-            if (num_active_futures < (int)MAX_ACTIVE_FUTURES) {
-                active_futures[num_active_futures++] = ptr;
-            }
+        return ptr;
+    }
+
+    void* cira_future_pool_alloc(uint32_t depth) {
+        if (depth == 0) return nullptr;
+
+        size_t bytes = static_cast<size_t>(depth) * CIRA_CACHELINE_BYTES;
+        if (bytes / CIRA_CACHELINE_BYTES != depth) return nullptr;
+
+        void* base = nullptr;
+        int ret = posix_memalign(&base, CIRA_CACHELINE_BYTES, bytes);
+        if (ret != 0 || !base) return nullptr;
+
+        std::memset(base, 0, bytes);
+
+        auto* pool = new (std::nothrow) CiraFuturePool;
+        if (!pool) {
+            free(base);
+            return nullptr;
         }
 
-        return ptr;
+        pool->base = base;
+        pool->depth = depth;
+        pool->bytes = bytes;
+        return pool;
+    }
+
+    void cira_future_pool_free(void* pool_ptr) {
+        auto* pool = static_cast<CiraFuturePool*>(pool_ptr);
+        if (!pool) return;
+
+        if (pool->registered)
+            unregister_linear_region(pool->base);
+        untrack_future_range(pool->base, pool->bytes);
+        free(pool->base);
+        delete pool;
+    }
+
+    uint32_t cira_future_pool_depth(void* pool_ptr) {
+        auto* pool = static_cast<CiraFuturePool*>(pool_ptr);
+        return pool ? pool->depth : 0;
+    }
+
+    void* cira_future_pool_get(void* pool_ptr, uint32_t index) {
+        return future_pool_entry(static_cast<CiraFuturePool*>(pool_ptr), index);
+    }
+
+    uintptr_t cira_future_pool_get_device_addr(void* pool_ptr, uint32_t index) {
+        void* entry = cira_future_pool_get(pool_ptr, index);
+        return entry ? translate_runtime_paddr("future", entry) : 0;
+    }
+
+    int cira_future_pool_register(void* pool_ptr, uint64_t device_base,
+                                  uint64_t flags) {
+        auto* pool = static_cast<CiraFuturePool*>(pool_ptr);
+        if (!pool || !pool->base || pool->bytes == 0) return -EINVAL;
+
+        int rc = register_linear_region(pool->base, pool->bytes,
+                                        device_base, flags);
+        if (rc == 0) pool->registered = true;
+        return rc;
+    }
+
+    int cira_future_pool_unregister(void* pool_ptr) {
+        auto* pool = static_cast<CiraFuturePool*>(pool_ptr);
+        if (!pool || !pool->base) return -EINVAL;
+
+        int rc = unregister_linear_region(pool->base);
+        if (rc == 0) pool->registered = false;
+        return rc;
+    }
+
+    int cira_future_pool_arm(void* pool_ptr, uint32_t index) {
+        void* entry = cira_future_pool_get(pool_ptr, index);
+        if (!entry) return -EINVAL;
+        clear_completion(entry);
+        track_active_future(entry);
+        return 0;
     }
 
     void* cira_future_await(void* completion_ptr) {
@@ -1339,16 +1780,7 @@ extern "C" {
     void cira_future_free(void* completion_ptr) {
         if (!completion_ptr) return;
 
-        // Remove from active tracking
-        {
-            std::lock_guard<std::mutex> lock(futures_mutex);
-            for (int i = 0; i < num_active_futures; ++i) {
-                if (active_futures[i] == completion_ptr) {
-                    active_futures[i] = active_futures[--num_active_futures];
-                    break;
-                }
-            }
-        }
+        untrack_active_future(completion_ptr);
 
         free(completion_ptr);
     }
@@ -1363,11 +1795,11 @@ extern "C" {
 
         std::lock_guard<std::mutex> lock(futures_mutex);
 
-        for (int i = 0; i < num_active_futures; ++i) {
-            if (!active_futures[i]) continue;
+        for (void* active_future : active_futures) {
+            if (!active_future) continue;
 
             volatile uint32_t* magic_ptr =
-                reinterpret_cast<volatile uint32_t*>(active_futures[i]);
+                reinterpret_cast<volatile uint32_t*>(active_future);
 
             // Spin until this future completes
             while (*magic_ptr != 0xDEADBEEF) {
@@ -1381,7 +1813,7 @@ extern "C" {
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
         // Clear active futures list (they've all completed)
-        num_active_futures = 0;
+        active_futures.clear();
     }
 
     void cira_offload_submit(void* func_ptr, void** operands,
@@ -1405,6 +1837,7 @@ extern "C" {
         // (In real hardware, this goes through the MMIO queue)
 
         clear_completion(completion_ptr);
+        track_active_future(completion_ptr);
 
         // Hardware/FPGA path: write the call-job struct into the configured
         // CXL-visible MMIO control window.  The device firmware completes the

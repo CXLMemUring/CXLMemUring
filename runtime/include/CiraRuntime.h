@@ -226,6 +226,14 @@ extern "C" {
                                  const char* field_name, size_t prefetch_distance);
     uintptr_t cira_offload_get_paddr(void* engine, const char* field_name,
                                      void* node_data);
+    int cira_register_linear_region(void* virtual_base, uint64_t size,
+                                    uint64_t device_base, uint64_t flags);
+    int cira_unregister_linear_region(void* virtual_base);
+    uintptr_t cira_translate_registered_addr(void* addr);
+    uintptr_t cira_translate_paddr(const char* field_name, void* node_data);
+    uintptr_t cira_translate_llc_addr(void* addr);
+    void cira_gapbs_region_marker(uint32_t benchmark_id, uint32_t region_id,
+                                  const void* addr, uint64_t bytes);
     void cira_offload_evict_edge(void* engine, void* edge_ptr, size_t index);
 
     // Type 2 configuration
@@ -291,6 +299,20 @@ extern "C" {
     // Allocate a 64-byte-aligned completion structure.
     // Returns pointer to zeroed completion_data_t (magic=0, not ready).
     void* cira_future_alloc(void);
+
+    // Allocate a depth-sized slab of 64-byte completion cachelines for
+    // pipelined async chains.  Each entry can be monitored by the CPU and has
+    // a translated device address available through
+    // cira_future_pool_get_device_addr().
+    void* cira_future_pool_alloc(uint32_t depth);
+    void cira_future_pool_free(void* pool);
+    uint32_t cira_future_pool_depth(void* pool);
+    void* cira_future_pool_get(void* pool, uint32_t index);
+    uintptr_t cira_future_pool_get_device_addr(void* pool, uint32_t index);
+    int cira_future_pool_register(void* pool, uint64_t device_base,
+                                  uint64_t flags);
+    int cira_future_pool_unregister(void* pool);
+    int cira_future_pool_arm(void* pool, uint32_t index);
 
     // Await completion of an async operation.
     // Uses MONITOR/MWAIT on the completion cacheline (Granite Rapids: doesn't

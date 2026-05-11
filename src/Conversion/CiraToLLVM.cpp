@@ -258,12 +258,22 @@ struct GetPaddrOpLowering : public ConversionPattern {
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    // For this operation, we assume the node data already contains
-    // or can be converted to a physical address
-    // In a real implementation, this might involve calling runtime functions
-    
-    // For now, just pass through the value as a pointer
-    rewriter.replaceOp(op, operands[1]);
+    Location loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto *converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    Type resultType = converter->convertType(op->getResult(0).getType());
+    if (!resultType)
+      return failure();
+
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto nullFieldName = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+    auto translateFunc = FlatSymbolRefAttr::get(ctx, "cira_translate_paddr");
+
+    auto translated = rewriter.create<LLVM::CallOp>(
+        loc, resultType, translateFunc,
+        ValueRange{nullFieldName.getResult(), operands[0]});
+    rewriter.replaceOp(op, translated.getResults());
     return success();
   }
 };

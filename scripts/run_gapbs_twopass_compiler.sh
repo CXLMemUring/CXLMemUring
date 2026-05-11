@@ -19,6 +19,7 @@ PROFILE_BASE="${REPO_ROOT}/profile_results/gapbs"
 TEST_DIR="${REPO_ROOT}/test"
 GAPBS_SRC="${REPO_ROOT}/bench/gapbs/src"
 GAPBS_BIN="${REPO_ROOT}/bin/gapbs/x86_64-unknown-linux-gnu"
+export LD_LIBRARY_PATH="${BUILD_DIR}/runtime:${BUILD_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
 # Vortex simulation
 VORTEX_HOME="${REPO_ROOT}/vortex"
@@ -28,6 +29,22 @@ VORTEX_RTLSIM="${VORTEX_BUILD}/tests/regression/basic/rtlsim.sh"
 # Compiler tools
 CIRA_OPT="${BIN_DIR}/cira"
 CLANG="${REPO_ROOT}/../clangir/build/bin/clang++"
+
+# Tunable compiler/backend knobs. These defaults are conservative enough for
+# quick local evaluation and map cleanly onto a future gem5 timing source.
+CIRA_BACKEND="${CIRA_BACKEND:-gem5}"
+CIRA_TARGET="${CIRA_TARGET:-gem5-cxl-type2}"
+CIRA_CLOCK_FREQ_MHZ="${CIRA_CLOCK_FREQ_MHZ:-200}"
+CIRA_CXL_LATENCY_NS="${CIRA_CXL_LATENCY_NS:-165}"
+CIRA_LLC_LATENCY_NS="${CIRA_LLC_LATENCY_NS:-15}"
+CIRA_SYNC_OVERHEAD_NS="${CIRA_SYNC_OVERHEAD_NS:-50}"
+CIRA_MEMORY_STALL_PCT="${CIRA_MEMORY_STALL_PCT:-100}"
+CIRA_HOST_WORK_FRACTION_PCT="${CIRA_HOST_WORK_FRACTION_PCT:-25}"
+CIRA_H2D_BW_GBPS="${CIRA_H2D_BW_GBPS:-10.0}"
+CIRA_D2H_BW_GBPS="${CIRA_D2H_BW_GBPS:-10.0}"
+CIRA_EVAL_BENCHMARKS="${CIRA_EVAL_BENCHMARKS:-bc sssp pr}"
+CIRA_DEFAULT_SCALE="${CIRA_DEFAULT_SCALE:-10}"
+CIRA_RUN_COMPILER_SMOKE="${CIRA_RUN_COMPILER_SMOKE:-1}"
 
 # GAPBS benchmarks with their offloadable kernels and estimated kernel call counts
 declare -A GAPBS_KERNELS=(
@@ -53,6 +70,51 @@ declare -A GAPBS_KERNEL_CALLS=(
     ["tc"]="1"
 )
 
+# Benchmark-specific compiler hints used to seed the generated profiles.
+declare -A GAPBS_PREFETCH_DEPTH=(
+    ["bc"]="24"
+    ["bfs"]="20"
+    ["cc"]="16"
+    ["cc_sv"]="16"
+    ["pr"]="8"
+    ["pr_spmv"]="8"
+    ["sssp"]="20"
+    ["tc"]="12"
+)
+
+declare -A GAPBS_PARALLELISM=(
+    ["bc"]="data_dependent"
+    ["bfs"]="data_dependent"
+    ["cc"]="data_dependent"
+    ["cc_sv"]="data_dependent"
+    ["pr"]="reduction"
+    ["pr_spmv"]="reduction"
+    ["sssp"]="data_dependent"
+    ["tc"]="reduction"
+)
+
+declare -A GAPBS_MIN_ELEMENTS=(
+    ["bc"]="1024"
+    ["bfs"]="1024"
+    ["cc"]="1024"
+    ["cc_sv"]="1024"
+    ["pr"]="2048"
+    ["pr_spmv"]="2048"
+    ["sssp"]="1024"
+    ["tc"]="4096"
+)
+
+declare -A GAPBS_EXPECTED_SPEEDUP=(
+    ["bc"]="2.4"
+    ["bfs"]="2.1"
+    ["cc"]="1.8"
+    ["cc_sv"]="1.8"
+    ["pr"]="3.2"
+    ["pr_spmv"]="3.0"
+    ["sssp"]="2.2"
+    ["tc"]="2.6"
+)
+
 # Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -68,14 +130,15 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_bench() { echo -e "${CYAN}[BENCH]${NC} $*"; }
 log_result() { echo -e "${MAGENTA}[RESULT]${NC} $*"; }
+die() { log_error "$*"; exit 1; }
 
 #==============================================================================
 # Parse arguments
 #==============================================================================
 
 MODE="${1:-help}"
-BENCHMARK="${2:-all}"
-GRAPH_SCALE="${3:-10}"  # Default graph scale 2^10 = 1024 nodes
+BENCHMARK="${2:-eval}"
+GRAPH_SCALE="${3:-${CIRA_DEFAULT_SCALE}}"  # Default graph scale 2^10 = 1024 nodes
 
 usage() {
     echo "Usage: $0 <mode> [benchmark] [graph_scale]"
@@ -90,7 +153,17 @@ usage() {
     echo "  compare     Compare baseline vs injected timing"
     echo "  test        Run basic tests"
     echo ""
-    echo "Benchmarks: bc, bfs, cc, cc_sv, pr, pr_spmv, sssp, tc, all"
+    echo "Benchmarks: bc, bfs, cc, cc_sv, pr, pr_spmv, sssp, tc, all, eval"
+    echo "  eval expands to: ${CIRA_EVAL_BENCHMARKS}"
+    echo ""
+    echo "Knobs:"
+    echo "  CIRA_BACKEND=${CIRA_BACKEND} CIRA_TARGET=${CIRA_TARGET}"
+    echo "  CIRA_CLOCK_FREQ_MHZ=${CIRA_CLOCK_FREQ_MHZ}"
+    echo "  CIRA_CXL_LATENCY_NS=${CIRA_CXL_LATENCY_NS}"
+    echo "  CIRA_LLC_LATENCY_NS=${CIRA_LLC_LATENCY_NS}"
+    echo "  CIRA_SYNC_OVERHEAD_NS=${CIRA_SYNC_OVERHEAD_NS}"
+    echo "  CIRA_MEMORY_STALL_PCT=${CIRA_MEMORY_STALL_PCT}"
+    echo "  CIRA_HOST_WORK_FRACTION_PCT=${CIRA_HOST_WORK_FRACTION_PCT}"
     echo ""
     echo "Examples:"
     echo "  $0 twopass all 12      # Full two-pass simulation, 2^12 nodes"
@@ -100,11 +173,55 @@ usage() {
 }
 
 get_benchmarks() {
-    if [[ "${BENCHMARK}" == "all" ]]; then
-        echo "bc bfs cc_sv pr pr_spmv tc"  # Skip cc and sssp which have issues
-    else
-        echo "${BENCHMARK}"
-    fi
+    case "${BENCHMARK}" in
+        all)
+            echo "bc bfs cc cc_sv pr pr_spmv sssp tc"
+            ;;
+        eval|core|bc-sssp-pr)
+            echo "${CIRA_EVAL_BENCHMARKS}"
+            ;;
+        *)
+            echo "${BENCHMARK//,/ }"
+            ;;
+    esac
+}
+
+validate_benchmark() {
+    local bench="$1"
+    [[ -n "${GAPBS_KERNELS[$bench]:-}" ]]
+}
+
+prefetch_depth_for() {
+    local bench="$1"
+    echo "${GAPBS_PREFETCH_DEPTH[$bench]:-16}"
+}
+
+parallelism_for() {
+    local bench="$1"
+    echo "${GAPBS_PARALLELISM[$bench]:-data_dependent}"
+}
+
+min_elements_for() {
+    local bench="$1"
+    echo "${GAPBS_MIN_ELEMENTS[$bench]:-1000}"
+}
+
+expected_speedup_for() {
+    local bench="$1"
+    echo "${GAPBS_EXPECTED_SPEEDUP[$bench]:-1.5}"
+}
+
+bench_args() {
+    local bench="$1"
+    local scale="$2"
+    case "${bench}" in
+        sssp)
+            echo "-g ${scale} -n 3 -d 2"
+            ;;
+        *)
+            echo "-g ${scale} -n 3"
+            ;;
+    esac
 }
 
 #==============================================================================
@@ -116,6 +233,7 @@ check_prerequisites() {
 
     # Check x86 binaries
     for bench in $(get_benchmarks); do
+        validate_benchmark "${bench}" || die "Unknown GAPBS benchmark '${bench}'"
         if [[ ! -x "${GAPBS_BIN}/${bench}" ]]; then
             log_warn "GAPBS binary not found: ${GAPBS_BIN}/${bench}"
             log_info "Building GAPBS first..."
@@ -144,17 +262,30 @@ generate_kernel_profile() {
     local profile_file="${profile_dir}/${bench}_twopass_profile.json"
 
     mkdir -p "${profile_dir}"
+    validate_benchmark "${bench}" || die "Unknown GAPBS benchmark '${bench}'"
 
     local kernels="${GAPBS_KERNELS[$bench]:-${bench}_kernel}"
     IFS=',' read -ra kernel_array <<< "${kernels}"
+    local prefetch_depth
+    prefetch_depth="$(prefetch_depth_for "${bench}")"
 
     # Generate profile JSON
     cat > "${profile_file}" << EOF
 {
   "benchmark": "${bench}",
+  "backend": "${CIRA_BACKEND}",
+  "target": "${CIRA_TARGET}",
   "num_regions": ${#kernel_array[@]},
-  "clock_freq_mhz": 200.0,
-  "cxl_latency_ns": 165,
+  "clock_freq_mhz": ${CIRA_CLOCK_FREQ_MHZ},
+  "cxl_latency_ns": ${CIRA_CXL_LATENCY_NS},
+  "llc_latency_ns": ${CIRA_LLC_LATENCY_NS},
+  "sync_overhead_ns": ${CIRA_SYNC_OVERHEAD_NS},
+  "compiler_knobs": {
+    "memory_stall_pct": ${CIRA_MEMORY_STALL_PCT},
+    "host_work_fraction_pct": ${CIRA_HOST_WORK_FRACTION_PCT},
+    "optimal_prefetch_depth": ${prefetch_depth},
+    "backend_profile_source": "${CIRA_BACKEND}"
+  },
   "regions": [
 EOF
 
@@ -191,10 +322,16 @@ EOF
                 ;;
         esac
 
+        memory_stall=$((memory_stall * CIRA_MEMORY_STALL_PCT / 100))
         local total_cycles=$((compute_cycles + memory_stall))
-        local total_time_ns=$((total_cycles * 5))  # 200MHz = 5ns/cycle
-        local host_work_ns=$((total_time_ns / 4))
+        local total_time_ns=$((total_cycles * 1000 / CIRA_CLOCK_FREQ_MHZ))
+        local host_work_ns=$((total_time_ns * CIRA_HOST_WORK_FRACTION_PCT / 100))
         local injection_delay=$((total_time_ns - host_work_ns))
+        local latency_hidden=false
+        if [[ ${injection_delay} -le 0 ]]; then
+            injection_delay=0
+            latency_hidden=true
+        fi
 
         [[ $idx -gt 0 ]] && echo "," >> "${profile_file}"
         cat >> "${profile_file}" << REGION
@@ -209,8 +346,8 @@ EOF
         "memory_stall_cycles": ${memory_stall}
       },
       "injection_delay_ns": ${injection_delay},
-      "latency_hidden": false,
-      "optimal_prefetch_depth": 16
+      "latency_hidden": ${latency_hidden},
+      "optimal_prefetch_depth": ${prefetch_depth}
     }
 REGION
         idx=$((idx + 1))
@@ -243,18 +380,20 @@ run_x86_baseline() {
         return 1
     fi
 
-    local graph_args="-g ${scale}"
-
     # Run baseline timing with multiple trials
     local output_file="${profile_dir}/x86_output.txt"
     local start_time end_time duration
+    local run_args
+    local warmup_args
+    run_args="$(bench_args "${bench}" "${scale}")"
+    warmup_args="${run_args/-n 3/-n 1}"
 
     # Warmup run
-    timeout 60 "${bin}" ${graph_args} -n 1 > /dev/null 2>&1 || true
+    timeout 60 "${bin}" ${warmup_args} > /dev/null 2>&1 || true
 
     # Timed run
     start_time=$(date +%s%N)
-    timeout 120 "${bin}" ${graph_args} -n 3 > "${output_file}" 2>&1 || true
+    timeout 120 "${bin}" ${run_args} > "${output_file}" 2>&1 || true
     end_time=$(date +%s%N)
 
     duration=$(( (end_time - start_time) / 1000000 ))  # ms

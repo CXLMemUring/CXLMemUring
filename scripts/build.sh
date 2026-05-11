@@ -166,6 +166,7 @@ case "${BENCHMARK_KEY}" in
   gapbs)
     BENCHMARK_ID="GAPBS"
     SOURCE_DIRS=("${REPO_ROOT}/bench/gapbs/src")
+    EXTRA_SOURCES=("${REPO_ROOT}/runtime/gapbs_cxx_runtime_support.cpp")
     BENCHMARK_EXTRA_LDFLAGS=(-lstdc++ -lpthread -lm)
     WORK_ROOT="${WORK_BASE_DIR}/gapbs_pipeline"
     BIN_ROOT="${BIN_BASE_DIR}/gapbs"
@@ -448,9 +449,9 @@ for src in "${SOURCES[@]}"; do
   esac
 
 
-  # Workaround: GAPBS cxx_runtime_support.cpp provides vtables and STL symbols
+  # Workaround: GAPBS C++ runtime support provides vtables and STL symbols
   # that the CIR pipeline doesn't emit correctly. Must be compiled natively.
-  if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == */cxx_runtime_support.cpp ]]; then
+  if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == */gapbs_cxx_runtime_support.cpp ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -676,6 +677,9 @@ for src in "${SOURCES[@]}"; do
   if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "MONETDB" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
     USE_DIRECT_PATH=true
   fi
+  if [[ "${PIPELINE_LLVM_LOWERING:-}" == "cira" || "${PIPELINE_LLVM_LOWERING:-}" == "hetero" ]]; then
+    USE_DIRECT_PATH=false
+  fi
 
   if [[ "${USE_DIRECT_PATH}" == "false" ]]; then
     # Only run cir-to-mlir for heterogeneous path (non-direct benchmarks)
@@ -758,18 +762,13 @@ for src in "${SOURCES[@]}"; do
       mv "${cira_path}.pgo" "${cira_path}"
     fi
 
-    # Select conversion pass based on offload target
-    if [[ "${OFFLOAD_TARGET:-}" == "vortex" ]]; then
-      # Use Vortex-specific lowering for GPU offload
-      "${CIRA_BIN}" -allow-unregistered-dialect \
-        --pass-pipeline='builtin.module(convert-cira-to-llvm-vortex,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
-        "${cira_path}" -o "${llvm_mlir_path}.dirty"
-    else
-      # Default heterogeneous lowering
-      "${CIRA_BIN}" -allow-unregistered-dialect \
-        --pass-pipeline='builtin.module(convert-cira-to-llvm-hetero,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
-        "${cira_path}" -o "${llvm_mlir_path}.dirty"
-    fi
+    # Use the registered heterogeneous host lowering for x86 binaries that call
+    # the CIRA/Vortex runtime. Standalone device kernel codegen is handled by
+    # separate CIRA passes; the old convert-cira-to-llvm-vortex pass is not
+    # registered in the shipped cira binary.
+    "${CIRA_BIN}" -allow-unregistered-dialect \
+      --pass-pipeline='builtin.module(convert-cira-to-llvm-hetero,convert-scf-to-cf,convert-cf-to-llvm,convert-to-llvm,reconcile-unrealized-casts)' \
+      "${cira_path}" -o "${llvm_mlir_path}.dirty"
 
     python3 "${REPO_ROOT}/scripts/cleanup_unrealized_casts.py" "${llvm_mlir_path}.dirty" > "${llvm_mlir_path}.tmp"
     python3 "${REPO_ROOT}/scripts/remove_leftover_scf.py" "${llvm_mlir_path}.tmp" "${llvm_mlir_path}"
@@ -804,6 +803,9 @@ for arch in "${ARCHES[@]}"; do
     ensure_dir_writable "$(dirname "${obj}")"
     # Run opt to apply LLVM optimizations including NRVO before LLC
     "${OPT_BIN}" -O2 -S "${ll}" -o "${ll_opt}" 2>/dev/null || cp "${ll}" "${ll_opt}"
+    if [[ "${BENCHMARK_ID}" == "GAPBS" ]]; then
+      python3 "${REPO_ROOT}/scripts/inject_gapbs_runtime_hooks.py" "${ll_opt}"
+    fi
     # Work around an LLVM CodeGenPrepare crash on some degenerate CFGs by
     # disabling CGP entirely for llc on these IR files.
     "${LLC_BIN}" -O2 -filetype=obj -relocation-model=pic -disable-cgp -mtriple="${arch}" "${ll_opt}" -o "${obj}"
@@ -819,13 +821,24 @@ if [[ "${SKIP_LINK}" != "true" ]]; then
 
   ensure_dir_writable "${BIN_ROOT}/${X86_ARCH}"
 
-  # For GAPBS, each source file is a standalone benchmark - link separately
+  # For GAPBS, each source file is a standalone benchmark - link separately.
+  # The native support object carries C++ ABI vtables that the CIR path can miss;
+  # include it in every benchmark binary but do not emit a standalone support bin.
   if [[ "${BENCHMARK_KEY}" == "gapbs" ]]; then
     info "  Building separate GAPBS binaries..."
+    GAPBS_SUPPORT_OBJS=()
+    GAPBS_BENCH_OBJS=()
     for obj in "${X86_OBJS[@]}"; do
+      case "$(basename "${obj}")" in
+        gapbs_cxx_runtime_support.o) GAPBS_SUPPORT_OBJS+=("${obj}") ;;
+        cxx_runtime_support.o) ;;
+        *) GAPBS_BENCH_OBJS+=("${obj}") ;;
+      esac
+    done
+    for obj in "${GAPBS_BENCH_OBJS[@]}"; do
       bench_name=$(basename "${obj}" .o)
       info "    Linking ${bench_name}..."
-      "${LINKER_BIN}" -target "${X86_ARCH}" "${obj}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${bench_name}"
+      "${LINKER_BIN}" -target "${X86_ARCH}" "${obj}" "${GAPBS_SUPPORT_OBJS[@]}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${bench_name}"
     done
   else
     "${LINKER_BIN}" -target "${X86_ARCH}" "${X86_OBJS[@]}" "${LINK_FLAGS[@]}" -o "${BIN_ROOT}/${X86_ARCH}/${BIN_NAME}"

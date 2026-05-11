@@ -479,6 +479,27 @@ def fix_cond_br_types(lines):
     return output
 
 
+
+def sanitize_remaining_cir_types(lines):
+    """Drop stale CIR aliases and normalize remaining type annotations.
+
+    The CIRA/LLVM pipeline can leave CIR shorthand aliases only in branch
+    operand annotations after the real operations have been converted. LLVM
+    dialect verification treats those as mismatched types, so normalize them
+    after the structural cleanup pass.
+    """
+    output = []
+    for line in lines:
+        if re.match(r"^\s*![A-Za-z0-9_]+\s*=\s*!cir\.", line):
+            continue
+        # In the remaining LLVM dialect text, !cir.bool only appears as a
+        # block operand annotation, where the converted producer/result is i1.
+        line = re.sub(r"!cir\.bool", "i1", line)
+        line = convert_cir_type_to_llvm(line)
+        line = re.sub(r"!cir\.ptr<[^>]*>", "!llvm.ptr", line)
+        output.append(line)
+    return output
+
 def main():
     if len(sys.argv) > 1:
         with open(sys.argv[1], 'r') as f:
@@ -499,6 +520,8 @@ def main():
 
     # Fix cond_br type mismatches
     cleaned = fix_cond_br_types(cleaned)
+
+    cleaned = sanitize_remaining_cir_types(cleaned)
 
     # Write output
     output_text = '\n'.join(cleaned)

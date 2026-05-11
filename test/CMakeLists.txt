@@ -48,6 +48,13 @@ add_test(
 )
 
 add_test(
+  NAME get_paddr_runtime_lowering
+  COMMAND ${BASH_EXECUTABLE} -lc "\
+    ${_CIRA} ${CMAKE_SOURCE_DIR}/test/mlir/check_get_paddr_lowering.mlir --convert-cira-to-llvm-x86 > ${_OUT}/get_paddr_lowering.mlir && \
+    grep -q 'llvm.call @cira_translate_paddr' ${_OUT}/get_paddr_lowering.mlir"
+)
+
+add_test(
   NAME llc_slice_synthetic_100
   COMMAND ${BASH_EXECUTABLE} -lc "\
     ${_CIRA} ${CMAKE_SOURCE_DIR}/test/mlir/llc_slice_synthetic_100.mlir --convert-cira-to-llvm-x86 -o ${_OUT}/llc_slice_synthetic_100_lowered.mlir && \
