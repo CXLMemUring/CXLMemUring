@@ -21,7 +21,6 @@ HOOKS_BY_FILE = {
     ],
     "sssp": [
         ("9DeltaStep", 1, 0),
-        ("10RelaxEdges", 1, 1),
     ],
     "pr": [
         ("14PageRankPullGS", 2, 0),
@@ -31,7 +30,7 @@ HOOKS_BY_FILE = {
 DECLARE = "declare void @cira_gapbs_region_marker(i32, i32, ptr, i64)"
 DEFINE_RE = re.compile(
     r"^(?P<header>define\b.*\s@(?P<name>(?:\"[^\"]+\"|[^\s(]+))\s*"
-    r"\((?P<args>.*)\)\s*(?:#[0-9]+)?\s*\{)\s*$"
+    r"\((?P<args>.*)\)\s*[^{]*\{)\s*$"
 )
 
 
@@ -58,15 +57,22 @@ def hook_for_function(stem: str, func_name: str):
 
 def first_graph_arg(args: str) -> str:
     # GAPBS kernels all carry the graph reference as their first lowered
-    # pointer argument. Keep a null fallback for nonstandard IR spelling.
-    first = args.split(",", 1)[0].strip()
-    match = re.match(r"ptr(?:\s+[^%\s]+)*\s+(%\w+)$", first)
-    if match:
-        return f"ptr {match.group(1)}"
+    # pointer argument, except native LLVM IR may prepend an sret result slot.
+    # Keep a null fallback for nonstandard IR spelling.
+    for arg in args.split(","):
+        arg = arg.strip()
+        if "sret(" in arg:
+            continue
+        match = re.match(r"ptr(?:\s+[^%\s]+)*\s+(%\w+)$", arg)
+        if match:
+            return f"ptr {match.group(1)}"
     return "ptr null"
 
 
 def inject(text: str, stem: str) -> tuple[str, int]:
+    if "call void @cira_gapbs_region_marker(" in text:
+        return text, 0
+
     lines = text.splitlines()
     out: list[str] = []
     injected = 0

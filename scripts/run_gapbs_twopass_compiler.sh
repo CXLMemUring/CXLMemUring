@@ -224,6 +224,26 @@ bench_args() {
     esac
 }
 
+ratio() {
+    local numerator="$1"
+    local denominator="$2"
+    local digits="${3:-3}"
+    local fallback="${4:-1.0}"
+    python3 - "${numerator}" "${denominator}" "${digits}" "${fallback}" <<'PY'
+import sys
+
+try:
+    numerator = float(sys.argv[1])
+    denominator = float(sys.argv[2])
+    digits = int(sys.argv[3])
+    if denominator == 0:
+        raise ZeroDivisionError
+    print(f"{numerator / denominator:.{digits}f}")
+except Exception:
+    print(sys.argv[4])
+PY
+}
+
 #==============================================================================
 # Check prerequisites
 #==============================================================================
@@ -580,7 +600,7 @@ EOF
   "baseline_time_ms": ${baseline_time},
   "injection_delay_ms": ${total_injection_ms},
   "injected_time_ms": ${actual_duration},
-  "slowdown_factor": $(echo "scale=2; ${actual_duration} / ${baseline_time}" | bc 2>/dev/null || echo "1.0"),
+  "slowdown_factor": $(ratio "${actual_duration}" "${baseline_time}" 2 "1.0"),
   "kernel_calls": ${kernel_calls},
   "per_call_injection_ns": ${total_injection_ns}
 }
@@ -588,7 +608,7 @@ EOF
 
     log_info "  Baseline: ${baseline_time} ms"
     log_info "  Injected: ${actual_duration} ms"
-    log_info "  Slowdown: $(echo "scale=2; ${actual_duration} / ${baseline_time}" | bc 2>/dev/null || echo "N/A")x"
+    log_info "  Slowdown: $(ratio "${actual_duration}" "${baseline_time}" 2 "N/A")x"
 }
 
 #==============================================================================
@@ -641,11 +661,11 @@ generate_combined_profile() {
   },
   "timing_injection": {
     "injected_time_ms": ${injected_time},
-    "slowdown_vs_baseline": $(echo "scale=3; ${injected_time} / ${x86_time}" | bc 2>/dev/null || echo "1.0")
+    "slowdown_vs_baseline": $(ratio "${injected_time}" "${x86_time}" 3 "1.0")
   },
   "heterogeneous_estimate": {
     "estimated_time_ms": ${hetero_time},
-    "speedup_vs_baseline": $(echo "scale=3; ${x86_time} / ${hetero_time}" | bc 2>/dev/null || echo "1.0"),
+    "speedup_vs_baseline": $(ratio "${x86_time}" "${hetero_time}" 3 "1.0"),
     "kernel_calls": ${kernel_calls},
     "data_transfer_overhead_ms": ${data_transfer_overhead}
   },
@@ -817,7 +837,7 @@ EOF
 
         local slowdown="N/A"
         if [[ ${x86_time} -gt 0 && ${injected_time} -gt 0 ]]; then
-            slowdown=$(echo "scale=2; ${injected_time} / ${x86_time}" | bc 2>/dev/null || echo "N/A")
+            slowdown=$(ratio "${injected_time}" "${x86_time}" 2 "N/A")
         fi
 
         printf "%-12s %12d %12d %12s %12s\n" "${bench}" "${x86_time}" "${injected_time}" "${slowdown}x" "${hetero_time}"

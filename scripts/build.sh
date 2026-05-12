@@ -45,7 +45,7 @@ if [[ -z "${LLC_BIN:-}" ]]; then
 fi
 # Use the same compiler for linking as for compiling by default.
 LINKER_BIN="${LINKER_BIN:-${CLANGIR_BIN}}"
-RUNTIME_LIB_DIR="${RUNTIME_LIB_DIR:-${REPO_ROOT}/build/lib}"
+RUNTIME_LIB_DIR="${RUNTIME_LIB_DIR:-${REPO_ROOT}/build/runtime}"
 WORK_BASE_DIR="${PIPELINE_WORK_ROOT:-${REPO_ROOT}/build}"
 BIN_BASE_DIR="${PIPELINE_BIN_ROOT:-${REPO_ROOT}/bin}"
 
@@ -408,8 +408,22 @@ done
 append_includes_from_env PIPELINE_EXTRA_INCLUDES
 append_includes_from_env "${BENCHMARK_ID}_EXTRA_INCLUDES"
 
-LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -L/usr/local/lib -Wl,--allow-multiple-definition -lstdc++ -L/home/victoryang00/CXLMemUring/build/runtime -Wl,-rpath,/home/victoryang00/CXLMemUring/build/runtime  -lcira_runtime)
+if [[ "${BENCHMARK_ID}" == "GAPBS" ]]; then
+  if [[ -n "${CIRA_GAPBS_STATIC_MARKER:-}" && "${CIRA_GAPBS_STATIC_MARKER}" != "0" ]]; then
+    # x86 gem5 setups sometimes decode magic-instruction m5ops more reliably
+    # from static executables. This explicit mode embeds the small marker in
+    # gapbs_cxx_runtime_support.o; the default path links libcira_runtime.
+    LINK_FLAGS=(-Wl,--allow-multiple-definition -static -lstdc++)
+  else
+    LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -Wl,--allow-multiple-definition -lstdc++ -lcira_runtime)
+  fi
+else
+  LINK_FLAGS=("-L${RUNTIME_LIB_DIR}" "-Wl,-rpath,${RUNTIME_LIB_DIR}" -L/usr/local/lib -Wl,--allow-multiple-definition -lstdc++ -lcira_runtime)
+fi
 LINK_FLAGS+=("${BENCHMARK_EXTRA_LDFLAGS[@]}")
+if [[ "${BENCHMARK_ID}" == "GAPBS" ]]; then
+  LINK_FLAGS+=("-Wl,--version-script=${REPO_ROOT}/scripts/gapbs_export.map")
+fi
 append_flags_from_env PIPELINE_EXTRA_LDFLAGS LINK_FLAGS
 append_flags_from_env "${BENCHMARK_ID}_EXTRA_LDFLAGS" LINK_FLAGS
 
@@ -449,6 +463,28 @@ for src in "${SOURCES[@]}"; do
   esac
 
 
+  # ClangIR direct lowering currently produces an SSSP binary that crashes in
+  # the kernel. Keep SSSP on native LLVM IR while still injecting the same CIRA
+  # runtime marker before llc, so the resulting x86 binary remains instrumented.
+  if [[ "${BENCHMARK_ID}" == "GAPBS" && "$(basename "${src}")" == "sssp.cc" ]]; then
+    arch_dir="${OBJ_DIR}/${X86_ARCH}"
+    ensure_dir_writable "${arch_dir}"
+    obj="${arch_dir}/${stem}.o"
+    ll_opt="${llvm_path%.ll}.opt.ll"
+    ensure_dir_writable "$(dirname "${obj}")"
+    info "    (native LLVM IR - ClangIR SSSP kernel lowering workaround)"
+    NATIVE_CXX="/usr/bin/clang++"
+    [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
+    "${NATIVE_CXX}" -S -emit-llvm -fno-strict-aliasing \
+      "${compile_flags[@]}" "${INCLUDE_FLAGS[@]}" "${src}" \
+      -O3 -o "${llvm_path}"
+    cp "${llvm_path}" "${ll_opt}"
+    python3 "${REPO_ROOT}/scripts/inject_gapbs_runtime_hooks.py" "${ll_opt}"
+    "${LLC_BIN}" -O2 -filetype=obj -relocation-model=pic -disable-cgp \
+      -mtriple="${X86_ARCH}" "${ll_opt}" -o "${obj}"
+    continue
+  fi
+
   # Workaround: GAPBS C++ runtime support provides vtables and STL symbols
   # that the CIR pipeline doesn't emit correctly. Must be compiled natively.
   if [[ "${BENCHMARK_ID}" == "GAPBS" && "${src}" == */gapbs_cxx_runtime_support.cpp ]]; then
@@ -459,8 +495,14 @@ for src in "${SOURCES[@]}"; do
     info "    (native compilation - C++ runtime support for vtables/STL)"
     NATIVE_CXX="/usr/bin/clang++"
     [[ ! -x "${NATIVE_CXX}" ]] && NATIVE_CXX="$(command -v g++ || echo "${LINKER_BIN}")"
-    # Use standard C++ flags with RTTI and exceptions enabled for proper vtable emission
-    "${NATIVE_CXX}" -c -std=c++17 -fno-strict-aliasing \
+    # Use standard C++ flags with RTTI and exceptions enabled for proper vtable emission.
+    support_cxx_flags=(-std=c++17 -fno-strict-aliasing)
+    if [[ -n "${CIRA_GAPBS_STATIC_MARKER:-}" && "${CIRA_GAPBS_STATIC_MARKER}" != "0" ]]; then
+      support_cxx_flags+=(-fno-pie -DCIRA_GAPBS_STATIC_MARKER=1)
+    else
+      support_cxx_flags+=(-fPIC)
+    fi
+    "${NATIVE_CXX}" -c "${support_cxx_flags[@]}" \
       "${INCLUDE_FLAGS[@]}" "${src}" \
       -O3 -o "${obj}"
     continue
