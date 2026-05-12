@@ -3,9 +3,9 @@
   "benchmark": "bc",
   "target": "riscv_vortex",
   "timing": {
-    "total_cycles": 190851,
-    "total_time_ns": 954255,
-    "kernel_latency_ns": 954255
+    "total_cycles": 187883,
+    "total_time_ns": 939415,
+    "kernel_latency_ns": 939415
   },
   "status": "simulated"
 }

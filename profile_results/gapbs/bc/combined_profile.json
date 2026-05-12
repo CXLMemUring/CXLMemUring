@@ -7,11 +7,11 @@
     "target": "x86_64",
     "execution_time_ms": 11
   },
-  "vortex": {
+  "backend": {
     "profile_type": "vortex_estimated",
-    "target": "riscv_vortex",
+    "target": "gem5-cxl-type2",
     "timing": {
-      "kernel_latency_ns": 954255,
+      "kernel_latency_ns": 939415,
       "total_kernel_time_ms": 0,
       "h2d_latency_ns": 10000000,
       "d2h_latency_ns": 5000000
@@ -22,18 +22,18 @@
     }
   },
   "timing_injection": {
-    "injected_time_ms": 163,
-    "slowdown_vs_baseline": 14.818
+    "injected_time_ms": 157,
+    "slowdown_vs_baseline": 14.273
   },
   "heterogeneous_estimate": {
     "estimated_time_ms": 205,
-    "speedup_vs_baseline": .053,
+    "speedup_vs_baseline": 0.054,
     "kernel_calls": 100,
     "data_transfer_overhead_ms": 200
   },
   "compilation_hints": {
     "primary_offload_kernels": "BFSIter,BCUpdate",
-    "target_architecture": "riscv_vortex",
+    "target_architecture": "gem5-cxl-type2",
     "optimization_level": "O3"
   }
 }

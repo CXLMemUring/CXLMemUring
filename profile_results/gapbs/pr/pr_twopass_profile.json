@@ -1,8 +1,18 @@
 {
   "benchmark": "pr",
+  "backend": "gem5",
+  "target": "gem5-cxl-type2",
   "num_regions": 1,
-  "clock_freq_mhz": 200.0,
+  "clock_freq_mhz": 200,
   "cxl_latency_ns": 165,
+  "llc_latency_ns": 15,
+  "sync_overhead_ns": 50,
+  "compiler_knobs": {
+    "memory_stall_pct": 100,
+    "host_work_fraction_pct": 25,
+    "optimal_prefetch_depth": 8,
+    "backend_profile_source": "gem5"
+  },
   "regions": [
     {
       "region_id": 0,
@@ -16,7 +26,7 @@
       },
       "injection_delay_ns": 225000,
       "latency_hidden": false,
-      "optimal_prefetch_depth": 16
+      "optimal_prefetch_depth": 8
     }
 
   ]

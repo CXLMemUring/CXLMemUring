@@ -2,7 +2,7 @@
 # Run GAPBS two-pass execution using the CIRA compiler infrastructure
 #
 # Two-Pass Methodology:
-# 1. Profiling Pass: Run x86 baseline, run Vortex simulation, collect timing
+# 1. Profiling Pass: Run x86 baseline, run backend timing, collect timing
 # 2. Timing Injection Pass: Re-run x86 with injected delays to simulate heterogeneous execution
 #
 # Supports all GAPBS benchmarks: bc, bfs, cc, cc_sv, pr, pr_spmv, sssp, tc
@@ -25,6 +25,17 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/runtime:${BUILD_DIR}/lib:${LD_LIBRARY_PATH:
 VORTEX_HOME="${REPO_ROOT}/vortex"
 VORTEX_BUILD="${VORTEX_HOME}/build"
 VORTEX_RTLSIM="${VORTEX_BUILD}/tests/regression/basic/rtlsim.sh"
+
+# gem5 backend. By default this uses the common se.py-style interface:
+#   gem5.opt -d <outdir> <config.py> --cmd=<binary> --options="<args>"
+# Override GEM5_BIN, GEM5_CONFIG, GEM5_EXTRA_ARGS, or GEM5_OUT_BASE for a
+# project-specific CXL Type-2 configuration.
+GEM5_BIN="${GEM5_BIN:-$(command -v gem5.opt 2>/dev/null || command -v gem5 2>/dev/null || true)}"
+GEM5_CONFIG="${GEM5_CONFIG:-}"
+GEM5_EXTRA_ARGS="${GEM5_EXTRA_ARGS:-}"
+GEM5_OUT_BASE="${GEM5_OUT_BASE:-${PROFILE_BASE}/gem5}"
+GEM5_TIMEOUT_SEC="${GEM5_TIMEOUT_SEC:-600}"
+GEM5_TICK_PS="${GEM5_TICK_PS:-1}"
 
 # Compiler tools
 CIRA_OPT="${BIN_DIR}/cira"
@@ -148,7 +159,7 @@ usage() {
     echo "  inject      Run injection pass (uses timing profile)"
     echo "  full        Run both passes with comparison"
     echo "  twopass     Run complete two-pass simulation with timing injection"
-    echo "  simulate    Run Vortex RTL simulation only"
+    echo "  simulate    Run backend timing only"
     echo "  x86         Run x86 baseline only"
     echo "  compare     Compare baseline vs injected timing"
     echo "  test        Run basic tests"
@@ -164,12 +175,16 @@ usage() {
     echo "  CIRA_SYNC_OVERHEAD_NS=${CIRA_SYNC_OVERHEAD_NS}"
     echo "  CIRA_MEMORY_STALL_PCT=${CIRA_MEMORY_STALL_PCT}"
     echo "  CIRA_HOST_WORK_FRACTION_PCT=${CIRA_HOST_WORK_FRACTION_PCT}"
+    echo "  GEM5_BIN=${GEM5_BIN:-<not found>}"
+    echo "  GEM5_CONFIG=${GEM5_CONFIG:-<unset>}"
+    echo "  GEM5_EXTRA_ARGS=${GEM5_EXTRA_ARGS:-<unset>}"
     echo ""
     echo "Examples:"
     echo "  $0 twopass all 12      # Full two-pass simulation, 2^12 nodes"
     echo "  $0 profile bfs 10      # Profile BFS with 2^10 nodes"
     echo "  $0 compare all         # Compare baseline vs injected"
     echo "  $0 x86 pr 14           # Run PR with 2^14 nodes"
+    echo "  CIRA_BACKEND=gem5 GEM5_BIN=/path/gem5.opt GEM5_CONFIG=/path/se.py $0 profile eval 8"
 }
 
 get_benchmarks() {
@@ -262,8 +277,13 @@ check_prerequisites() {
         fi
     done
 
-    # Check Vortex
-    if [[ ! -d "${VORTEX_BUILD}" ]]; then
+    if [[ "${CIRA_BACKEND}" == gem5* ]]; then
+        if [[ -z "${GEM5_BIN}" || ! -x "${GEM5_BIN}" ]]; then
+            log_warn "gem5 binary not found; backend timing will use estimates"
+        elif [[ -z "${GEM5_CONFIG}" || ! -f "${GEM5_CONFIG}" ]]; then
+            log_warn "GEM5_CONFIG is not set to a config.py; backend timing will use estimates"
+        fi
+    elif [[ ! -d "${VORTEX_BUILD}" ]]; then
         log_warn "Vortex build not found at ${VORTEX_BUILD}"
         log_info "Vortex simulation will use estimates"
     fi
@@ -511,7 +531,130 @@ run_vortex_simulation() {
 }
 EOF
     echo "${sim_time}" > "${profile_dir}/.vortex_time"
+    echo "${sim_time}" > "${profile_dir}/.backend_time"
+    echo "vortex_estimated" > "${profile_dir}/.backend_name"
     log_info "  Vortex cycles: ${sim_cycles} (${sim_time} ns)"
+}
+
+run_gem5_backend() {
+    local bench="$1"
+    local scale="${2:-10}"
+    local profile_dir="${PROFILE_BASE}/${bench}"
+    mkdir -p "${profile_dir}" "${GEM5_OUT_BASE}"
+
+    if [[ -z "${GEM5_BIN}" || ! -x "${GEM5_BIN}" ]]; then
+        log_warn "  gem5 binary unavailable; falling back to estimate"
+        return 1
+    fi
+    if [[ -z "${GEM5_CONFIG}" || ! -f "${GEM5_CONFIG}" ]]; then
+        log_warn "  GEM5_CONFIG unavailable; falling back to estimate"
+        return 1
+    fi
+
+    local bin="${GAPBS_BIN}/${bench}"
+    if [[ ! -x "${bin}" ]]; then
+        log_warn "  GAPBS binary unavailable for gem5: ${bin}"
+        return 1
+    fi
+
+    local run_args
+    run_args="$(bench_args "${bench}" "${scale}")"
+    local gem5_dir="${GEM5_OUT_BASE}/${bench}"
+    local output_file="${profile_dir}/gem5_output.txt"
+    local -a gem5_extra=()
+    if [[ -n "${GEM5_EXTRA_ARGS}" ]]; then
+        read -r -a gem5_extra <<< "${GEM5_EXTRA_ARGS}"
+    fi
+
+    log_bench "Running gem5 backend for ${bench}"
+    set +e
+    env CIRA_GEM5_M5OPS=1 CIRA_GAPBS_GEM5_M5OPS=1 \
+        LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" \
+        timeout "${GEM5_TIMEOUT_SEC}" \
+        "${GEM5_BIN}" -d "${gem5_dir}" "${gem5_extra[@]}" \
+        "${GEM5_CONFIG}" --cmd="${bin}" --options="${run_args}" \
+        > "${output_file}" 2>&1
+    local gem5_status=$?
+    set -e
+
+    local stats_file="${gem5_dir}/stats.txt"
+    if [[ ! -f "${stats_file}" ]]; then
+        log_warn "  gem5 did not produce stats.txt (status=${gem5_status}); falling back to estimate"
+        return 1
+    fi
+
+    local sim_time
+    sim_time=$(python3 - "${stats_file}" "${GEM5_TICK_PS}" <<'PY'
+import re
+import sys
+
+stats_path = sys.argv[1]
+tick_ps = float(sys.argv[2])
+text = open(stats_path, "r", encoding="utf-8", errors="ignore").read()
+
+ticks = re.search(r"^simTicks\s+([0-9]+)", text, re.MULTILINE)
+if ticks:
+    print(int(int(ticks.group(1)) * tick_ps / 1000.0))
+    raise SystemExit
+
+seconds = re.search(r"^simSeconds\s+([0-9.eE+-]+)", text, re.MULTILINE)
+if seconds:
+    print(int(float(seconds.group(1)) * 1_000_000_000))
+    raise SystemExit
+
+print(0)
+PY
+)
+
+    if [[ -z "${sim_time}" || "${sim_time}" == "0" ]]; then
+        log_warn "  gem5 stats did not include simTicks/simSeconds; falling back to estimate"
+        return 1
+    fi
+
+    cat > "${profile_dir}/gem5_m5ops.json" << EOF
+{
+  "profile_type": "gem5_m5ops",
+  "benchmark": "${bench}",
+  "target": "${CIRA_TARGET}",
+  "timing": {
+    "total_time_ns": ${sim_time},
+    "kernel_latency_ns": ${sim_time}
+  },
+  "gem5": {
+    "binary": "${GEM5_BIN}",
+    "config": "${GEM5_CONFIG}",
+    "outdir": "${gem5_dir}",
+    "status": ${gem5_status}
+  },
+  "m5ops": {
+    "CIRA_GEM5_M5OPS": 1,
+    "CIRA_GAPBS_GEM5_M5OPS": 1
+  }
+}
+EOF
+
+    echo "${sim_time}" > "${profile_dir}/.vortex_time"
+    echo "${sim_time}" > "${profile_dir}/.backend_time"
+    echo "gem5_m5ops" > "${profile_dir}/.backend_name"
+    log_info "  gem5 time: ${sim_time} ns"
+}
+
+run_backend_simulation() {
+    local bench="$1"
+    local scale="${2:-10}"
+
+    case "${CIRA_BACKEND}" in
+        gem5*)
+            run_gem5_backend "${bench}" "${scale}" || run_vortex_simulation "${bench}"
+            ;;
+        vortex|rtlsim|vortex-rtlsim)
+            run_vortex_simulation "${bench}"
+            ;;
+        *)
+            log_warn "Unknown CIRA_BACKEND=${CIRA_BACKEND}; using estimates"
+            run_vortex_simulation "${bench}"
+            ;;
+    esac
 }
 
 #==============================================================================
@@ -621,9 +764,10 @@ generate_combined_profile() {
 
     log_bench "Generating combined profile for ${bench}"
 
-    local x86_time=0 vortex_time=0 injected_time=0
+    local x86_time=0 vortex_time=0 injected_time=0 backend_name="${CIRA_BACKEND}"
     [[ -f "${profile_dir}/.x86_time" ]] && x86_time=$(cat "${profile_dir}/.x86_time")
     [[ -f "${profile_dir}/.vortex_time" ]] && vortex_time=$(cat "${profile_dir}/.vortex_time")
+    [[ -f "${profile_dir}/.backend_name" ]] && backend_name=$(cat "${profile_dir}/.backend_name")
     [[ -f "${profile_dir}/.injected_time" ]] && injected_time=$(cat "${profile_dir}/.injected_time")
 
     local vortex_time_ms=$((vortex_time / 1000000))
@@ -645,9 +789,9 @@ generate_combined_profile() {
     "target": "x86_64",
     "execution_time_ms": ${x86_time}
   },
-  "vortex": {
-    "profile_type": "vortex_estimated",
-    "target": "riscv_vortex",
+  "backend": {
+    "profile_type": "${backend_name}",
+    "target": "${CIRA_TARGET}",
     "timing": {
       "kernel_latency_ns": ${vortex_time},
       "total_kernel_time_ms": ${total_vortex_ms},
@@ -671,7 +815,7 @@ generate_combined_profile() {
   },
   "compilation_hints": {
     "primary_offload_kernels": "${GAPBS_KERNELS[$bench]:-${bench}_kernel}",
-    "target_architecture": "riscv_vortex",
+    "target_architecture": "${CIRA_TARGET}",
     "optimization_level": "O3"
   }
 }
@@ -691,7 +835,7 @@ run_profiling_pass() {
     log_info ""
     log_info "This pass:"
     log_info "  1. Runs x86 baseline to measure T_x86"
-    log_info "  2. Runs Vortex simulation to collect T_vortex"
+    log_info "  2. Runs ${CIRA_BACKEND} backend timing to collect T_backend"
     log_info "  3. Generates timing profile for Pass 2"
     log_info ""
 
@@ -701,8 +845,8 @@ run_profiling_pass() {
         # Run x86 baseline
         run_x86_baseline "${bench}" "${scale}"
 
-        # Run Vortex simulation
-        run_vortex_simulation "${bench}"
+        # Run selected backend timing source.
+        run_backend_simulation "${bench}" "${scale}"
 
         # Generate two-pass profile
         generate_kernel_profile "${bench}" > /dev/null
@@ -867,9 +1011,10 @@ EOF
     for bench in $(get_benchmarks); do
         local profile_dir="${PROFILE_BASE}/${bench}"
         if [[ -d "${profile_dir}" ]]; then
-            local x86_time=0 vortex_time=0 injected_time=0
+            local x86_time=0 vortex_time=0 injected_time=0 backend_name="${CIRA_BACKEND}"
             [[ -f "${profile_dir}/.x86_time" ]] && x86_time=$(cat "${profile_dir}/.x86_time")
             [[ -f "${profile_dir}/.vortex_time" ]] && vortex_time=$(cat "${profile_dir}/.vortex_time")
+            [[ -f "${profile_dir}/.backend_name" ]] && backend_name=$(cat "${profile_dir}/.backend_name")
             [[ -f "${profile_dir}/.injected_time" ]] && injected_time=$(cat "${profile_dir}/.injected_time")
 
             [[ "${first}" != "true" ]] && echo "," >> "${summary_file}"
@@ -878,6 +1023,8 @@ EOF
             cat >> "${summary_file}" << BENCH
     "${bench}": {
       "x86_time_ms": ${x86_time},
+      "backend": "${backend_name}",
+      "backend_time_ns": ${vortex_time},
       "vortex_time_ns": ${vortex_time},
       "injected_time_ms": ${injected_time},
       "kernels": "${GAPBS_KERNELS[$bench]:-unknown}",
@@ -962,7 +1109,7 @@ main() {
         simulate)
             check_prerequisites
             for bench in $(get_benchmarks); do
-                run_vortex_simulation "${bench}"
+                run_backend_simulation "${bench}" "${GRAPH_SCALE}"
             done
             ;;
         x86)

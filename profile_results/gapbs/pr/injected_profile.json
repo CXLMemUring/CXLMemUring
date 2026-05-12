@@ -1,11 +1,11 @@
 {
   "profile_type": "timing_injected",
   "benchmark": "pr",
-  "graph_scale": 10,
-  "baseline_time_ms": 26,
+  "graph_scale": 8,
+  "baseline_time_ms": 17,
   "injection_delay_ms": 4,
-  "injected_time_ms": 38,
-  "slowdown_factor": 1.46,
+  "injected_time_ms": 29,
+  "slowdown_factor": 1.71,
   "kernel_calls": 20,
   "per_call_injection_ns": 225000
 }

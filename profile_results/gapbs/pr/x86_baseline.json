@@ -2,12 +2,12 @@
   "profile_type": "pr_baseline",
   "target": "x86_64",
   "benchmark": "pr",
-  "graph_scale": 10,
-  "execution_time_ms": 26,
+  "graph_scale": 8,
+  "execution_time_ms": 17,
   "num_trials": 3,
   "kernels": {
     "PageRankPull": {
-      "estimated_time_ms": 26,
+      "estimated_time_ms": 17,
       "offload_candidate": true
     }
 
