@@ -11,6 +11,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -29,24 +30,38 @@ namespace {
 
 std::atomic<bool> g_targetInited{false};
 
-// Fold one i32 sentinel global to a constant initializer + internal linkage,
-// so the optimizer can constant-propagate uses across the IR.
-void patchI32(llvm::Module& M, const char* name, uint32_t value) {
+// Walk every load of the sentinel global and rewrite it directly to the
+// chosen constant. This is functionally equivalent to "make the global
+// internal+constant then run -globalopt -instcombine", but it does the
+// fold by hand and avoids LLVM's pass manager entirely — necessary on
+// LLVM trunk builds whose PoisoningVH<BasicBlock> machinery is broken.
+template <typename ConstantBuilderT>
+void foldGlobalUses(llvm::Module& M, const char* name,
+                    ConstantBuilderT makeConstant) {
     llvm::GlobalVariable* g = M.getGlobalVariable(name, /*AllowInternal=*/true);
     if (!g) return;
-    auto* ty = llvm::Type::getInt32Ty(M.getContext());
-    g->setConstant(true);
-    g->setInitializer(llvm::ConstantInt::get(ty, value, /*isSigned=*/false));
-    g->setLinkage(llvm::GlobalValue::InternalLinkage);
+    llvm::Constant* C = makeConstant(M.getContext());
+    // Snapshot uses first — replacing them mutates the use-list.
+    llvm::SmallVector<llvm::User*, 8> users(g->users().begin(), g->users().end());
+    for (llvm::User* U : users) {
+        if (auto* LI = llvm::dyn_cast<llvm::LoadInst>(U)) {
+            LI->replaceAllUsesWith(C);
+            LI->eraseFromParent();
+        }
+    }
+    if (g->use_empty()) g->eraseFromParent();
+}
+
+void patchI32(llvm::Module& M, const char* name, uint32_t value) {
+    foldGlobalUses(M, name, [value](llvm::LLVMContext& C) -> llvm::Constant* {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(C), value);
+    });
 }
 
 void patchF32(llvm::Module& M, const char* name, float value) {
-    llvm::GlobalVariable* g = M.getGlobalVariable(name, /*AllowInternal=*/true);
-    if (!g) return;
-    auto* ty = llvm::Type::getFloatTy(M.getContext());
-    g->setConstant(true);
-    g->setInitializer(llvm::ConstantFP::get(ty, (double)value));
-    g->setLinkage(llvm::GlobalValue::InternalLinkage);
+    foldGlobalUses(M, name, [value](llvm::LLVMContext& C) -> llvm::Constant* {
+        return llvm::ConstantFP::get(llvm::Type::getFloatTy(C), (double)value);
+    });
 }
 
 uint64_t mix64(uint64_t x) {
@@ -84,13 +99,17 @@ uint64_t CiraJitEngine::fingerprint(const cira_jit_decision_t& d) {
 
 void CiraJitEngine::patchAndOptimize(llvm::Module&              M,
                                      const cira_jit_decision_t& d) {
+    // Rewrite every load of a sentinel global to the literal constant —
+    // already enough for the LLJIT MC backend to constant-fold dependent
+    // arithmetic and unroll trivially-bounded loops.
     patchI32(M, kSentinelBatchSize,        d.batch_size);
     patchI32(M, kSentinelTraversalDepth,   d.traversal_depth);
     patchI32(M, kSentinelPipelineDistance, d.pipeline_distance);
     patchF32(M, kSentinelHostDeviceSplit,  d.host_device_split);
 
-    // Run the standard O3 pipeline so constant-prop / unrolling / branch
-    // folding can collapse code that switches on the sentinel values.
+    // Run the standard O2 pipeline so InstCombine / SimplifyCFG / loop
+    // unrolling can additionally fold the patched constants across basic
+    // blocks before codegen.
     llvm::PassBuilder PB;
     llvm::LoopAnalysisManager     LAM;
     llvm::FunctionAnalysisManager FAM;
@@ -101,7 +120,7 @@ void CiraJitEngine::patchAndOptimize(llvm::Module&              M,
     PB.registerFunctionAnalyses(FAM);
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-    auto MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+    auto MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
     MPM.run(M, MAM);
 }
 
