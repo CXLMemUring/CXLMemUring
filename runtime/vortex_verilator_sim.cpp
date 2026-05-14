@@ -4,6 +4,7 @@
 #include "vortex_verilator_sim.h"
 #include "vortex_device.h"
 #include "offload_profiler.h"
+#include "cira_jit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -496,13 +497,38 @@ void twopass_sync_point(twopass_context_t* ctx, uint32_t region_id) {
                    region->injection_delay_ns / 1000.0);
         }
 
-        // Calculate optimal prefetch depth
-        // Prefetch should cover the memory stall portion
-        uint64_t stall_ns = region->vortex_timing.memory_stall_time_ns;
-        // Assume we can prefetch one cache line per 100ns
-        region->optimal_prefetch_depth = (uint32_t)(stall_ns / 100);
-        if (region->optimal_prefetch_depth < 4) region->optimal_prefetch_depth = 4;
-        if (region->optimal_prefetch_depth > 64) region->optimal_prefetch_depth = 64;
+        // Hand the region's profile to the JIT cost model and let it pick
+        // batch_size / traversal_depth / pipeline_distance / host_device_split
+        // jointly. Replaces the previous hardcoded prefetch-depth heuristic.
+        cira_jit_workload_t wl = {0};
+        wl.host_independent_work_ns   = region->host_independent_work_ns;
+        wl.vortex_total_time_ns       = region->vortex_timing.total_time_ns;
+        wl.vortex_compute_cycles      = region->vortex_timing.compute_cycles;
+        wl.vortex_memory_stall_cycles = region->vortex_timing.memory_stall_cycles;
+        wl.vortex_total_cycles        = region->vortex_timing.total_cycles;
+        wl.cache_hits                 = region->vortex_timing.cache_hits;
+        wl.cache_misses               = region->vortex_timing.cache_misses;
+        wl.num_elements               = 0;       // unknown at this layer
+        wl.host_per_elem_ns           = 0.0;
+
+        cira_hw_limits_t hw = cira_jit_default_limits();
+        hw.cxl_latency_ns   = (double)ctx->cxl_latency_ns;
+        hw.clock_freq_mhz   = ctx->clock_freq_mhz;
+
+        cira_jit_decision_t dec;
+        cira_jit_decide(&wl, &hw, &dec);
+
+        region->optimal_batch_size        = dec.batch_size;
+        region->optimal_traversal_depth   = dec.traversal_depth;
+        region->optimal_pipeline_distance = dec.pipeline_distance;
+        region->optimal_prefetch_depth    = dec.pipeline_distance; // backward-compat alias
+        region->host_device_split         = dec.host_device_split;
+        region->should_offload            = dec.should_offload;
+        region->jit_reason_bits           = dec.reason_bits;
+
+        char dbg[160];
+        cira_jit_format(&dec, dbg, sizeof(dbg));
+        printf("  [JIT] %s\n", dbg);
 
     } else if (ctx->mode == TWOPASS_MODE_INJECTION) {
         // Inject delay if T_vortex > T_host
@@ -559,7 +585,15 @@ int twopass_save_profile(twopass_context_t* ctx, const char* output_path) {
         fprintf(f, "      },\n");
         fprintf(f, "      \"injection_delay_ns\": %ld,\n", r->injection_delay_ns);
         fprintf(f, "      \"latency_hidden\": %s,\n", r->latency_hidden ? "true" : "false");
-        fprintf(f, "      \"optimal_prefetch_depth\": %u\n", r->optimal_prefetch_depth);
+        fprintf(f, "      \"optimal_prefetch_depth\": %u,\n", r->optimal_prefetch_depth);
+        fprintf(f, "      \"jit\": {\n");
+        fprintf(f, "        \"batch_size\": %u,\n", r->optimal_batch_size);
+        fprintf(f, "        \"traversal_depth\": %u,\n", r->optimal_traversal_depth);
+        fprintf(f, "        \"pipeline_distance\": %u,\n", r->optimal_pipeline_distance);
+        fprintf(f, "        \"host_device_split\": %.4f,\n", (double)r->host_device_split);
+        fprintf(f, "        \"should_offload\": %s,\n", r->should_offload ? "true" : "false");
+        fprintf(f, "        \"reason_bits\": %u\n", r->jit_reason_bits);
+        fprintf(f, "      }\n");
         fprintf(f, "    }%s\n", (i < ctx->num_regions - 1) ? "," : "");
     }
 
@@ -648,6 +682,17 @@ int twopass_load_profile(twopass_context_t* ctx, const char* input_path) {
             r->injection_delay_ns = parse_json_int(pos, "\"injection_delay_ns\"");
             r->latency_hidden = parse_json_bool(pos, "\"latency_hidden\"");
             r->optimal_prefetch_depth = (uint32_t)parse_json_int(pos, "\"optimal_prefetch_depth\"");
+
+            // JIT-chosen knobs (newer profiles only — fields are 0 if absent).
+            r->optimal_batch_size        = (uint32_t)parse_json_int(pos, "\"batch_size\"");
+            r->optimal_traversal_depth   = (uint32_t)parse_json_int(pos, "\"traversal_depth\"");
+            r->optimal_pipeline_distance = (uint32_t)parse_json_int(pos, "\"pipeline_distance\"");
+            r->should_offload            = parse_json_bool(pos, "\"should_offload\"");
+            r->jit_reason_bits           = (uint32_t)parse_json_int(pos, "\"reason_bits\"");
+            // host_device_split is a float — re-parse as integer micros (×1e4) for now.
+            // Profiles written by twopass_save_profile use plain decimals, so
+            // fall back to 0.0 when absent and let the next profiling pass refresh.
+            r->host_device_split = 0.0f;
 
             region_idx++;
             pos++;

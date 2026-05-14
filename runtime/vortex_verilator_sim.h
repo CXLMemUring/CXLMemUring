@@ -110,7 +110,17 @@ typedef struct {
 
     // Prefetch effectiveness
     uint64_t prefetch_slack_ns;         // Available time for prefetching
-    uint32_t optimal_prefetch_depth;    // Recommended prefetch lookahead
+    uint32_t optimal_prefetch_depth;    // Alias of optimal_pipeline_distance (backward compat)
+
+    // JIT-chosen knobs (see runtime/include/cira_jit.h). Populated during
+    // the profiling sync point and consumed by the MLIR rewriter / runtime
+    // dispatcher on the next pass.
+    uint32_t optimal_batch_size;        // descriptors per dispatch
+    uint32_t optimal_traversal_depth;   // pointer hops before yielding
+    uint32_t optimal_pipeline_distance; // SW-pipelining stage count
+    float    host_device_split;         // fraction of work kept on host (0..1)
+    bool     should_offload;            // false ⇒ keep region on host
+    uint32_t jit_reason_bits;           // CIRA_JIT_REASON_* (debug)
 } offload_region_profile_t;
 
 // Two-pass execution mode (defined at namespace level for C compatibility)

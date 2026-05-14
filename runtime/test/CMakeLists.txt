@@ -14,8 +14,13 @@ add_executable(test_twopass_runtime test_twopass_runtime.cpp)
 target_link_libraries(test_twopass_runtime cira_runtime)
 target_include_directories(test_twopass_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+add_executable(test_cira_jit test_cira_jit.cpp)
+target_link_libraries(test_cira_jit cira_runtime)
+target_include_directories(test_cira_jit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
 # Add tests
 add_test(NAME OffloadEngineTest COMMAND test_offload_engine)
 add_test(NAME MemoryManagerTest COMMAND test_memory_manager)
 add_test(NAME GraphRuntimeTest COMMAND test_graph_runtime)
 add_test(NAME TwoPassRuntimeTest COMMAND test_twopass_runtime)
+add_test(NAME CiraJitTest COMMAND test_cira_jit)

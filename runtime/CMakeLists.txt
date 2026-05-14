@@ -52,7 +52,33 @@ set(RUNTIME_SOURCES
     vortex_verilator_sim.cpp
     vortex_device.cpp
     vortex_offload_backend.cpp
+    cira_jit.cpp                      # JIT cost model (no LLVM dependency)
 )
+
+# Optional: ORC JIT engine. Built only when LLVM is discoverable so the
+# runtime can still be built standalone (e.g., embedded test environments).
+find_package(LLVM CONFIG QUIET)
+if(LLVM_FOUND)
+    message(STATUS "LLVM ${LLVM_PACKAGE_VERSION} found at ${LLVM_DIR} — building cira_jit_engine")
+    list(APPEND RUNTIME_SOURCES cira_jit_engine.cpp)
+    set(CIRA_JIT_HAS_LLVM ON)
+    llvm_map_components_to_libnames(CIRA_JIT_LLVM_LIBS
+        Core
+        IRReader
+        BitReader
+        Passes
+        Analysis
+        OrcJIT
+        ExecutionEngine
+        Support
+        Target
+        TargetParser
+        native
+    )
+else()
+    message(STATUS "LLVM not found — cira_jit_engine (ORC JIT) will not be built")
+    set(CIRA_JIT_HAS_LLVM OFF)
+endif()
 
 # Create shared library
 add_library(cira_runtime SHARED ${RUNTIME_SOURCES})
@@ -76,6 +102,12 @@ if(VORTEX_FOUND)
     target_link_libraries(cira_runtime PUBLIC ${VORTEX_HOME}/build/runtime/libsimx.so)
 endif()
 
+if(CIRA_JIT_HAS_LLVM)
+    target_include_directories(cira_runtime PUBLIC ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(cira_runtime PUBLIC ${LLVM_DEFINITIONS} CIRA_JIT_HAS_LLVM)
+    target_link_libraries(cira_runtime PUBLIC ${CIRA_JIT_LLVM_LIBS})
+endif()
+
 # Create static library
 add_library(cira_runtime_static STATIC ${RUNTIME_SOURCES})
 set_target_properties(cira_runtime_static PROPERTIES OUTPUT_NAME cira_runtime)
@@ -95,6 +127,12 @@ if(VORTEX_FOUND)
     target_link_libraries(cira_runtime_static PUBLIC dl)
     target_link_libraries(cira_runtime_static PUBLIC ${VORTEX_HOME}/build/runtime/libvortex.so)
     target_link_libraries(cira_runtime_static PUBLIC ${VORTEX_HOME}/build/runtime/libsimx.so)
+endif()
+
+if(CIRA_JIT_HAS_LLVM)
+    target_include_directories(cira_runtime_static PUBLIC ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(cira_runtime_static PUBLIC ${LLVM_DEFINITIONS} CIRA_JIT_HAS_LLVM)
+    target_link_libraries(cira_runtime_static PUBLIC ${CIRA_JIT_LLVM_LIBS})
 endif()
 
 # Set library properties
