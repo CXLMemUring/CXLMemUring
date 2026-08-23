@@ -17,6 +17,7 @@ cira_add_runtime_test(test_cira_jit test_cira_jit.cpp)
 # Dispatch path: cache-resident wait + CXL control window + doorbell protocol.
 # Runs against an emulated (anonymous-memory) window, so no FPGA is needed.
 cira_add_runtime_test(test_cira_offload_path test_cira_offload_path.cpp)
+cira_add_runtime_test(test_cira_cache_completion_path test_cira_cache_completion_path.cpp)
 
 # Offload engine / two-pass profiling.
 cira_add_runtime_test(test_offload_engine test_offload_engine.cpp)

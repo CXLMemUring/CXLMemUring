@@ -198,6 +198,27 @@ bool kernel_cxl_translate_addr(void *ptr, uintptr_t *translated) {
     return true;
 }
 
+// CXL.cache completion writes must target a host physical/cache-coherent
+// address.  Do not reuse the generic graph-address fallback here: it may
+// manufacture a process virtual or reverse-engineered LLC token that is not a
+// valid completion cache line for the device.
+bool translate_completion_hpa(void *completion, uintptr_t *hpa) {
+    if (!completion || !hpa)
+        return false;
+
+    uintptr_t translated = 0;
+    if (!translate_registered_region(completion, &translated) &&
+        !kernel_cxl_translate_addr(completion, &translated)) {
+        return false;
+    }
+
+    if (translated == 0 || (translated & (CIRA_CXL_CACHELINE_SIZE - 1)) != 0)
+        return false;
+
+    *hpa = translated;
+    return true;
+}
+
 uintptr_t pagemap_physical_addr(const void *ptr) {
     if (!ptr)
         return 0;
@@ -1129,7 +1150,17 @@ bool submit_mmio_call(void *func_ptr, void **operands, int num_operands, void *c
 
     uint32_t argc = num_operands > 0 ? static_cast<uint32_t>(num_operands) : 0;
     uint64_t seq = 0;
-    int rc = cira_mmio_submit_call(window, func_ptr, operands, argc, completion_ptr, &seq);
+    int rc = CIRA_MMIO_OK;
+    if (cira_mmio_is_emulated(window)) {
+        rc = cira_mmio_submit_call(window, func_ptr, operands, argc, completion_ptr, &seq);
+    } else {
+        uintptr_t completion_hpa = 0;
+        if (!translate_completion_hpa(completion_ptr, &completion_hpa)) {
+            std::cerr << "cira_offload_submit: no trusted CXL.cache completion HPA" << std::endl;
+            return false;
+        }
+        rc = cira_mmio_submit_call_device(window, func_ptr, operands, argc, completion_hpa, &seq);
+    }
     if (rc == CIRA_MMIO_ENODEV) {
         if (env_flag_enabled("CIRA_CXL_MMIO_STRICT")) {
             std::cerr << "cira_offload_submit: MMIO window is configured but "
