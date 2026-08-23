@@ -371,6 +371,23 @@ int cira_mmio_submit_job(cira_mmio_window_t *w, uint32_t job_id, const void *arg
     return CIRA_MMIO_OK;
 }
 
+int cira_mmio_submit_call_device(cira_mmio_window_t *w, void *func, void **operands, uint32_t num_operands,
+                                 uint64_t completion_hpa, uint64_t *out_seq) {
+    if (num_operands && !operands)
+        return CIRA_MMIO_EINVAL;
+    if (completion_hpa == 0 || (completion_hpa & (CIRA_CXL_CACHELINE_SIZE - 1)))
+        return CIRA_MMIO_EINVAL;
+
+    void *target = func ? func : cira_mmio_device_func();
+    if (!target)
+        return CIRA_MMIO_ENODEV;
+
+    cira_cxl_call_job_t job = {
+        (uint64_t)(uintptr_t)target, (uint64_t)(uintptr_t)operands, completion_hpa, num_operands, 0,
+    };
+    return cira_mmio_submit_job(w, CIRA_CXL_JOB_CALL, &job, sizeof(job), 0, out_seq);
+}
+
 int cira_mmio_submit_call(cira_mmio_window_t *w, void *func, void **operands, uint32_t num_operands, void *completion,
                           uint64_t *out_seq) {
     if (num_operands && !operands)

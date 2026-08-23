@@ -111,6 +111,32 @@ void device_kernel(void **operands, uint32_t num_operands, void *completion) {
     cira_mmio_signal_completion(completion, CIRA_CXL_STATUS_SUCCESS, sum);
 }
 
+void test_device_form_submit(cira_mmio_window_t *w) {
+    std::printf("device-address submission\n");
+
+    uint64_t a = 40, b = 2;
+    void *operands[] = {&a, &b};
+    constexpr uint64_t kCompletionHpa = 0x0000'1234'5678'9a80ull;
+
+    uint64_t seq = 0;
+    int rc = cira_mmio_submit_call_device(w, (void *)&device_kernel, operands, 2, kCompletionHpa, &seq);
+    check(rc == CIRA_MMIO_OK, "device-form submit accepts aligned HPA");
+    check(seq != 0, "device-form submit reports a sequence number");
+
+    cira_cxl_call_job_t job = {};
+    auto *base = static_cast<volatile uint8_t *>(cira_mmio_base(w));
+    std::memcpy(&job,
+                const_cast<const void *>(reinterpret_cast<volatile void *>(
+                    base + cira_cxl_arg_slot_off(CIRA_CXL_JOB_CALL) + sizeof(cira_cxl_arg_slot_t))),
+                sizeof(job));
+    check(job.completion_addr == kCompletionHpa, "device-form descriptor preserves completion HPA");
+    check(cira_mmio_submit_call_device(w, (void *)&device_kernel, operands, 2, kCompletionHpa + 1, nullptr) ==
+              CIRA_MMIO_EINVAL,
+          "device-form submit rejects unaligned HPA");
+    check(cira_mmio_submit_call_device(w, (void *)&device_kernel, operands, 2, 0, nullptr) == CIRA_MMIO_EINVAL,
+          "device-form submit rejects zero HPA");
+}
+
 // Minimal device firmware: poll the doorbell, run the job, mirror the status.
 void firmware_loop(cira_mmio_window_t *w, std::atomic<bool> *stop) {
     auto *base = static_cast<volatile uint8_t *>(cira_mmio_base(w));
@@ -213,6 +239,14 @@ int main() {
         return 1;
     }
     test_mmio_registers(w);
+    test_device_form_submit(w);
+    cira_mmio_close(w);
+
+    w = open_emulated_window();
+    if (!w) {
+        std::fprintf(stderr, "[FAIL] could not open emulated MMIO window for pointer submission\n");
+        return 1;
+    }
     test_doorbell_submit(w);
     cira_mmio_close(w);
 

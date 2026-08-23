@@ -100,6 +100,12 @@ int cira_mmio_submit_job(cira_mmio_window_t *window, uint32_t job_id, const void
 int cira_mmio_submit_call(cira_mmio_window_t *window, void *func, void **operands, uint32_t num_operands,
                           void *completion, uint64_t *out_seq);
 
+// Hardware-only form of cira.offload submission. completion_hpa must be a
+// nonzero, 64-byte-aligned device-visible host address; it is stored verbatim
+// in cira_cxl_call_job_t.completion_addr.
+int cira_mmio_submit_call_device(cira_mmio_window_t *window, void *func, void **operands, uint32_t num_operands,
+                                 uint64_t completion_hpa, uint64_t *out_seq);
+
 // Wait for the device to mirror `seq` back into the host-status register.
 // timeout_ns == 0 waits forever. Uses the cira_mwait.h backend.
 int cira_mmio_wait_seq(const cira_mmio_window_t *window, uint64_t seq, uint64_t timeout_ns);
