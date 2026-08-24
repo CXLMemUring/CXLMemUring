@@ -427,4 +427,28 @@ int cira_mmio_wait_seq(const cira_mmio_window_t *w, uint64_t seq, uint64_t timeo
     }
 }
 
+int cira_mmio_read_host_status(const cira_mmio_window_t *w, cira_cxl_host_status_t *out_status) {
+    if (!w || !w->base)
+        return CIRA_MMIO_ENODEV;
+    if (!out_status)
+        return CIRA_MMIO_EINVAL;
+    if (!in_range(w, CIRA_CXL_STATUS_OFF, sizeof(cira_cxl_host_status_t)))
+        return CIRA_MMIO_ERANGE;
+
+    auto *status = reinterpret_cast<const volatile cira_cxl_host_status_t *>(w->base + CIRA_CXL_STATUS_OFF);
+    const uint64_t first_seq = __atomic_load_n(&status->seq, __ATOMIC_ACQUIRE);
+    cira_cxl_host_status_t snapshot = {};
+    snapshot.magic = status->magic;
+    snapshot.version = status->version;
+    snapshot.job_id = status->job_id;
+    snapshot.status = status->status;
+    const uint64_t second_seq = __atomic_load_n(&status->seq, __ATOMIC_ACQUIRE);
+    if (first_seq != second_seq)
+        return CIRA_MMIO_EIO;
+
+    snapshot.seq = second_seq;
+    *out_status = snapshot;
+    return CIRA_MMIO_OK;
+}
+
 } // extern "C"

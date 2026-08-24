@@ -110,6 +110,11 @@ int cira_mmio_submit_call_device(cira_mmio_window_t *window, void *func, void **
 // timeout_ns == 0 waits forever. Uses the cira_mwait.h backend.
 int cira_mmio_wait_seq(const cira_mmio_window_t *window, uint64_t seq, uint64_t timeout_ns);
 
+// Read a coherent snapshot of the device-to-host status mirror. The caller
+// must validate magic/version/job_id and compare the returned sequence with
+// the request it is waiting for.
+int cira_mmio_read_host_status(const cira_mmio_window_t *window, cira_cxl_host_status_t *out_status);
+
 // Wait on a 64-byte CIRA completion line until magic == CIRA_CXL_COMPLETION_MAGIC.
 int cira_mmio_wait_completion(void *completion, uint64_t timeout_ns);
 

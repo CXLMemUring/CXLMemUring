@@ -41,10 +41,24 @@ struct RegisteredCiraRegion {
     uint64_t size;
     uintptr_t device_base;
     uint64_t flags;
+    uint64_t inflight_completions;
 };
 
 std::mutex g_region_mutex;
 std::vector<RegisteredCiraRegion> g_registered_regions;
+
+struct MmioCompletionSubmission {
+    cira_mmio_window_t *window;
+    uint64_t seq;
+    uintptr_t region_virtual_base;
+};
+
+std::mutex g_mmio_completion_mutex;
+std::unordered_map<void *, MmioCompletionSubmission> g_mmio_completions;
+// Serializes admission to the one-entry hardware completion/status channel.
+// The map mutex protects bookkeeping; this mutex makes check/reserve/doorbell
+// one atomic admission decision across submitter threads.
+std::mutex g_hardware_completion_submit_mutex;
 
 uint64_t parse_env_u64_default(const char *name, uint64_t fallback) {
     const char *value = std::getenv(name);
@@ -73,11 +87,14 @@ int register_linear_region(void *virtual_base, uint64_t size, uint64_t device_ba
         size,
         static_cast<uintptr_t>(device_base),
         flags,
+        0,
     };
 
     std::lock_guard<std::mutex> lock(g_region_mutex);
     for (auto &existing : g_registered_regions) {
         if (existing.virtual_base == region.virtual_base) {
+            if (existing.inflight_completions != 0)
+                return -EBUSY;
             existing = region;
             return 0;
         }
@@ -93,16 +110,18 @@ int unregister_linear_region(void *virtual_base) {
 
     uintptr_t base = reinterpret_cast<uintptr_t>(virtual_base);
     std::lock_guard<std::mutex> lock(g_region_mutex);
-    auto it = std::remove_if(g_registered_regions.begin(), g_registered_regions.end(),
-                             [base](const RegisteredCiraRegion &region) { return region.virtual_base == base; });
+    auto it = std::find_if(g_registered_regions.begin(), g_registered_regions.end(),
+                           [base](const RegisteredCiraRegion &region) { return region.virtual_base == base; });
     if (it == g_registered_regions.end())
         return -ENOENT;
-    g_registered_regions.erase(it, g_registered_regions.end());
+    if (it->inflight_completions != 0)
+        return -EBUSY;
+    g_registered_regions.erase(it);
     return 0;
 }
 
-bool translate_registered_region(void *ptr, uintptr_t *translated) {
-    if (!ptr || !translated)
+bool translate_registered_region_range(void *ptr, uint64_t bytes, uintptr_t *translated) {
+    if (!ptr || !translated || bytes == 0)
         return false;
 
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
@@ -111,13 +130,17 @@ bool translate_registered_region(void *ptr, uintptr_t *translated) {
         if (addr < region.virtual_base)
             continue;
         uint64_t offset = static_cast<uint64_t>(addr - region.virtual_base);
-        if (offset >= region.size)
+        if (offset >= region.size || bytes > region.size - offset)
             continue;
 
         *translated = static_cast<uintptr_t>(region.device_base + offset);
         return true;
     }
     return false;
+}
+
+bool translate_registered_region(void *ptr, uintptr_t *translated) {
+    return translate_registered_region_range(ptr, 1, translated);
 }
 
 uint32_t parity64(uint64_t value) {
@@ -198,25 +221,199 @@ bool kernel_cxl_translate_addr(void *ptr, uintptr_t *translated) {
     return true;
 }
 
-// CXL.cache completion writes must target a host physical/cache-coherent
-// address.  Do not reuse the generic graph-address fallback here: it may
-// manufacture a process virtual or reverse-engineered LLC token that is not a
-// valid completion cache line for the device.
-bool translate_completion_hpa(void *completion, uintptr_t *hpa) {
-    if (!completion || !hpa)
+struct CompletionHpaReservation {
+    uintptr_t hpa;
+    uintptr_t region_virtual_base;
+};
+
+// CXL.cache completion writes require an explicit mapping that covers the
+// complete 64-byte line for the lifetime of the request.  The generic driver
+// translation ioctl cannot be used here until its ABI guarantees page pinning
+// and exposes a matching release operation, so this path fails closed to the
+// registered-region contract instead of accepting a transient HPA.
+bool reserve_completion_hpa(void *completion, CompletionHpaReservation *reservation) {
+    if (!completion || !reservation)
         return false;
 
-    uintptr_t translated = 0;
-    if (!translate_registered_region(completion, &translated) &&
-        !kernel_cxl_translate_addr(completion, &translated)) {
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(completion);
+    std::lock_guard<std::mutex> lock(g_region_mutex);
+    for (auto &region : g_registered_regions) {
+        if (addr < region.virtual_base)
+            continue;
+        const uint64_t offset = static_cast<uint64_t>(addr - region.virtual_base);
+        if (offset >= region.size || CIRA_CXL_CACHELINE_SIZE > region.size - offset)
+            continue;
+
+        const uintptr_t translated = static_cast<uintptr_t>(region.device_base + offset);
+        if (translated == 0 || (translated & (CIRA_CXL_CACHELINE_SIZE - 1)) != 0)
+            return false;
+
+        ++region.inflight_completions;
+        *reservation = {translated, region.virtual_base};
+        return true;
+    }
+    return false;
+}
+
+void release_completion_hpa_reservation(uintptr_t region_virtual_base) {
+    if (region_virtual_base == 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_region_mutex);
+    for (auto &region : g_registered_regions) {
+        if (region.virtual_base != region_virtual_base)
+            continue;
+        if (region.inflight_completions != 0)
+            --region.inflight_completions;
+        return;
+    }
+}
+
+void track_mmio_completion_submission(void *completion, cira_mmio_window_t *window, uint64_t seq,
+                                      uintptr_t region_virtual_base) {
+    if (!completion || !window || seq == 0 || region_virtual_base == 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
+    g_mmio_completions[completion] = {window, seq, region_virtual_base};
+}
+
+bool lookup_mmio_completion_submission(void *completion, MmioCompletionSubmission *submission) {
+    if (!completion || !submission)
         return false;
+    std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
+    auto it = g_mmio_completions.find(completion);
+    if (it == g_mmio_completions.end())
+        return false;
+    *submission = it->second;
+    return true;
+}
+
+void untrack_mmio_completion_submission(void *completion) {
+    if (!completion)
+        return;
+    uintptr_t region_virtual_base = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
+        auto it = g_mmio_completions.find(completion);
+        if (it == g_mmio_completions.end())
+            return;
+        region_virtual_base = it->second.region_virtual_base;
+        g_mmio_completions.erase(it);
+    }
+    release_completion_hpa_reservation(region_virtual_base);
+}
+
+bool completion_is_terminal(void *completion) {
+    if (!completion)
+        return false;
+    auto *magic = reinterpret_cast<const volatile uint32_t *>(completion);
+    return __atomic_load_n(magic, __ATOMIC_ACQUIRE) == CIRA_CXL_COMPLETION_MAGIC;
+}
+
+void harvest_mmio_completion_status(cira_mmio_window_t *window) {
+    if (!window)
+        return;
+
+    std::vector<std::pair<void *, MmioCompletionSubmission>> submissions;
+    {
+        std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
+        for (const auto &entry : g_mmio_completions) {
+            if (entry.second.window == window)
+                submissions.push_back(entry);
+        }
     }
 
-    if (translated == 0 || (translated & (CIRA_CXL_CACHELINE_SIZE - 1)) != 0)
-        return false;
+    for (const auto &entry : submissions) {
+        cira_cxl_host_status_t status = {};
+        if (cira_mmio_read_host_status(window, &status) == CIRA_MMIO_OK &&
+            status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
+            status.job_id == CIRA_CXL_JOB_CALL && status.seq == entry.second.seq &&
+            status.status != CIRA_CXL_STATUS_SUCCESS) {
+            cira_mmio_signal_completion(entry.first, status.status, 0);
+            untrack_mmio_completion_submission(entry.first);
+        } else if (status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
+                   status.job_id == CIRA_CXL_JOB_CALL && status.seq == entry.second.seq &&
+                   status.status == CIRA_CXL_STATUS_SUCCESS && completion_is_terminal(entry.first)) {
+            // Magic is only a candidate completion: the commit W may become
+            // visible before its B response.  Release the request only after
+            // the dispatcher mirrors successful completion of that B.
+            untrack_mmio_completion_submission(entry.first);
+        }
+    }
+}
 
-    *hpa = translated;
-    return true;
+bool hardware_completion_channel_busy(cira_mmio_window_t *window) {
+    harvest_mmio_completion_status(window);
+    std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
+    return std::any_of(g_mmio_completions.begin(), g_mmio_completions.end(),
+                       [window](const auto &entry) { return entry.second.window == window; });
+}
+
+bool mmio_completion_range_busy(void *base, size_t bytes) {
+    if (!base || bytes == 0)
+        return false;
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(base);
+    const uintptr_t end = begin + bytes;
+    std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
+    return std::any_of(g_mmio_completions.begin(), g_mmio_completions.end(), [begin, end](const auto &entry) {
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(entry.first);
+        return addr >= begin && addr < end;
+    });
+}
+
+uint64_t monotonic_time_ns() {
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+int wait_for_completion_terminal(void *completion, uint64_t timeout_ns) {
+    MmioCompletionSubmission submission = {};
+    if (!lookup_mmio_completion_submission(completion, &submission))
+        return cira_mmio_wait_completion(completion, timeout_ns);
+
+    constexpr uint64_t kStatusPollSliceNs = 1000ull * 1000ull;
+    const uint64_t start_ns = monotonic_time_ns();
+    for (;;) {
+        uint64_t wait_ns = kStatusPollSliceNs;
+        if (timeout_ns != 0) {
+            const uint64_t elapsed_ns = monotonic_time_ns() - start_ns;
+            if (elapsed_ns >= timeout_ns) {
+                // A visible magic without the matching terminal status is
+                // not a successful future. Keep the reservation pinned so a
+                // late device response cannot target freed memory, but make
+                // the timeout visible to the caller as a terminal I/O error.
+                cira_mmio_signal_completion(completion, CIRA_CXL_STATUS_COMPLETION_IO, 0);
+                return CIRA_MMIO_ETIMEDOUT;
+            }
+            wait_ns = std::min(wait_ns, timeout_ns - elapsed_ns);
+        }
+
+        const bool magic_visible = cira_mmio_wait_completion(completion, wait_ns) == CIRA_MMIO_OK;
+
+        cira_cxl_host_status_t status = {};
+        if (cira_mmio_read_host_status(submission.window, &status) == CIRA_MMIO_OK &&
+            status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
+            status.job_id == CIRA_CXL_JOB_CALL && status.seq == submission.seq &&
+            status.status != CIRA_CXL_STATUS_SUCCESS) {
+            cira_mmio_signal_completion(completion, status.status, 0);
+            untrack_mmio_completion_submission(completion);
+            return CIRA_MMIO_EIO;
+        }
+        if (status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
+            status.job_id == CIRA_CXL_JOB_CALL && status.seq == submission.seq &&
+            status.status == CIRA_CXL_STATUS_SUCCESS && magic_visible) {
+            // The dispatcher has observed OKAY for the magic transaction and
+            // the cache-resident payload is visible to this CPU.
+            untrack_mmio_completion_submission(completion);
+            return CIRA_MMIO_OK;
+        }
+
+        // Once the magic is visible, waiting on it would return immediately.
+        // Park on the status mirror until its matching terminal sequence is
+        // published, preserving cache-resident completion as the data path.
+        if (magic_visible)
+            (void)cira_mmio_wait_seq(submission.window, submission.seq, wait_ns);
+    }
 }
 
 uintptr_t pagemap_physical_addr(const void *ptr) {
@@ -1151,16 +1348,32 @@ bool submit_mmio_call(void *func_ptr, void **operands, int num_operands, void *c
     uint32_t argc = num_operands > 0 ? static_cast<uint32_t>(num_operands) : 0;
     uint64_t seq = 0;
     int rc = CIRA_MMIO_OK;
+    bool hardware_completion = false;
+    CompletionHpaReservation reservation = {};
+    bool reservation_held = false;
+    std::unique_lock<std::mutex> completion_submit_lock;
     if (cira_mmio_is_emulated(window)) {
         rc = cira_mmio_submit_call(window, func_ptr, operands, argc, completion_ptr, &seq);
     } else {
-        uintptr_t completion_hpa = 0;
-        if (!translate_completion_hpa(completion_ptr, &completion_hpa)) {
+        // The device exposes only one terminal status mirror, so never let a
+        // second doorbell overwrite the first request's error before it has
+        // reached the matching future.  The caller safely falls back to its
+        // host implementation while the coherent completion channel is busy.
+        completion_submit_lock = std::unique_lock<std::mutex>(g_hardware_completion_submit_mutex);
+        if (hardware_completion_channel_busy(window)) {
+            std::cerr << "cira_offload_submit: CXL.cache completion channel busy" << std::endl;
+            return false;
+        }
+        if (!reserve_completion_hpa(completion_ptr, &reservation)) {
             std::cerr << "cira_offload_submit: no trusted CXL.cache completion HPA" << std::endl;
             return false;
         }
-        rc = cira_mmio_submit_call_device(window, func_ptr, operands, argc, completion_hpa, &seq);
+        reservation_held = true;
+        rc = cira_mmio_submit_call_device(window, func_ptr, operands, argc, reservation.hpa, &seq);
+        hardware_completion = true;
     }
+    if (rc != CIRA_MMIO_OK && reservation_held)
+        release_completion_hpa_reservation(reservation.region_virtual_base);
     if (rc == CIRA_MMIO_ENODEV) {
         if (env_flag_enabled("CIRA_CXL_MMIO_STRICT")) {
             std::cerr << "cira_offload_submit: MMIO window is configured but "
@@ -1173,8 +1386,11 @@ bool submit_mmio_call(void *func_ptr, void **operands, int num_operands, void *c
         return false;
     }
 
+    if (hardware_completion)
+        track_mmio_completion_submission(completion_ptr, window, seq, reservation.region_virtual_base);
+
     if (env_flag_enabled("CIRA_CXL_MMIO_WAIT") && completion_ptr) {
-        (void)cira_mmio_wait_completion(completion_ptr, cira_mmio_default_timeout_ns());
+        (void)wait_for_completion_terminal(completion_ptr, cira_mmio_default_timeout_ns());
     }
     return true;
 }
@@ -1690,6 +1906,11 @@ void cira_future_pool_free(void *pool_ptr) {
     if (!pool)
         return;
 
+    if (mmio_completion_range_busy(pool->base, pool->bytes)) {
+        std::cerr << "cira_future_pool_free: completion is still in flight" << std::endl;
+        return;
+    }
+
     if (pool->registered)
         unregister_linear_region(pool->base);
     untrack_future_range(pool->base, pool->bytes);
@@ -1757,7 +1978,7 @@ void *cira_future_await(void *completion_ptr) {
     // The wait itself is the paper's cache-resident poll: a bounded PAUSE
     // spin, then MONITOR/UMWAIT (or the best equivalent this host has) on
     // the completion line. See cira_mwait.h.
-    (void)cira_mmio_wait_completion(completion_ptr, cira_mmio_default_timeout_ns());
+    (void)wait_for_completion_terminal(completion_ptr, cira_mmio_default_timeout_ns());
 
     // Return pointer to the result field (offset 8)
     return reinterpret_cast<char *>(completion_ptr) + 8;
@@ -1767,7 +1988,13 @@ void cira_future_free(void *completion_ptr) {
     if (!completion_ptr)
         return;
 
+    if (mmio_completion_range_busy(completion_ptr, CIRA_CXL_CACHELINE_SIZE)) {
+        std::cerr << "cira_future_free: completion is still in flight" << std::endl;
+        return;
+    }
+
     untrack_active_future(completion_ptr);
+    untrack_mmio_completion_submission(completion_ptr);
 
     free(completion_ptr);
 }
@@ -1786,7 +2013,7 @@ void cira_phase_barrier(void) {
     for (void *active_future : active_futures) {
         if (!active_future)
             continue;
-        (void)cira_mmio_wait_completion(active_future, timeout_ns);
+        (void)wait_for_completion_terminal(active_future, timeout_ns);
     }
 
     // All futures complete — full fence
