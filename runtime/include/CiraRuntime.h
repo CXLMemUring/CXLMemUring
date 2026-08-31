@@ -340,6 +340,11 @@ extern "C" {
     // Phase barrier and offload submission
     // ====================================================================
 
+    // Attribute subsequent kernel submissions to the active benchmark query.
+    // A zero query ID clears the context.  When CIRA_OFFLOAD_TELEMETRY names a
+    // file, every submission appends one JSON object carrying this ID.
+    void cira_offload_set_query_context(uint32_t query_id);
+
     // Wait for all outstanding device tasks to complete.
     // Checks control bits in all active completion cachelines.
     void cira_phase_barrier(void);

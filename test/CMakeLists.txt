@@ -84,6 +84,11 @@ add_test(
 )
 
 add_test(
+  NAME tpch_query_extract
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/test/test_tpch_query_extract.py
+)
+
+add_test(
   NAME outline_rv64_reject_unresolved_call
   COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/outline_rv64_reject.mlir --cira-outline-rv64-kernels=manifest=${CMAKE_BINARY_DIR}/test_ctest_out/rejected.json 2>${CMAKE_BINARY_DIR}/test_ctest_out/outline-rv64-reject.err; status=\$?; grep -q 'cannot outline RV64 kernel.*unresolved call.*host_lookup' ${CMAKE_BINARY_DIR}/test_ctest_out/outline-rv64-reject.err || exit 0; test \$status -ne 0 || exit 0; exit 1"
 )

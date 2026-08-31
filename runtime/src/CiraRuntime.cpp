@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cinttypes>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -1336,6 +1337,8 @@ struct LlcTileMetadata {
 std::mutex g_llc_tile_mutex;
 std::unordered_map<void *, LlcTileMetadata> g_llc_tiles;
 thread_local int g_kernel_arg_conversion_status = CIRA_KERNEL_SUBMIT_OK;
+std::atomic<uint32_t> g_offload_query_context{0};
+std::mutex g_offload_telemetry_mutex;
 
 size_t align_up_cacheline(uint64_t size) {
     uint64_t requested = size ? size : CIRA_CACHELINE_BYTES;
@@ -1381,6 +1384,27 @@ void clear_completion(void *completion_ptr) { cira_mmio_arm_completion(completio
 
 void complete_in_software(void *completion_ptr, uint32_t status, uint64_t result = 0) {
     cira_mmio_signal_completion(completion_ptr, status, result);
+}
+
+void record_submit_telemetry(uint64_t kernel_id, int submit_status, const char *event) {
+    const char *path = std::getenv("CIRA_OFFLOAD_TELEMETRY");
+    if (!path || !*path)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_offload_telemetry_mutex);
+    FILE *stream = std::fopen(path, "a");
+    if (!stream) {
+        std::cerr << "cira_offload: cannot append telemetry " << path << std::endl;
+        return;
+    }
+    const char *mode = std::getenv("CIRA_OFFLOAD_MODE");
+    if (!mode || !*mode)
+        mode = "default";
+    std::fprintf(stream,
+                 "{\"event\":\"%s\",\"query_id\":%u,\"kernel_id\":\"0x%016" PRIx64
+                 "\",\"mode\":\"%s\",\"submit_status\":%d}\n",
+                 event, g_offload_query_context.load(std::memory_order_relaxed), kernel_id, mode, submit_status);
+    std::fclose(stream);
 }
 
 // Hardware path for cira.offload: stage the call job in the CXL Type-2 control
@@ -2070,6 +2094,10 @@ void cira_future_free(void *completion_ptr) {
 // Phase barrier and offload submission
 // ====================================================================
 
+void cira_offload_set_query_context(uint32_t query_id) {
+    g_offload_query_context.store(query_id, std::memory_order_relaxed);
+}
+
 void cira_phase_barrier(void) {
     // Wait for ALL active futures to complete.
     // This is the host-side implementation of cira.barrier / cira.phase_boundary.
@@ -2138,11 +2166,23 @@ int cira_offload_submit_kernel(uint64_t kernel_id, const void *typed_args, uint3
         // success, so a compiler-placed wait cannot hang or hide the failure.
         if (completion)
             complete_in_software(completion, device_status);
+        record_submit_telemetry(kernel_id, status,
+                                status == CIRA_KERNEL_SUBMIT_ENOMMIO ? "no-device" : "submit-failed");
         return status;
     };
 
     if (!completion || kernel_id == 0 || (args_size && !typed_args))
         return fail(CIRA_KERNEL_SUBMIT_EINVAL, CIRA_CXL_STATUS_BAD_ARGS, "invalid kernel submission arguments");
+
+    // The heterogeneous lowering retains the host traversal next to the
+    // device request.  Baseline mode deliberately executes only that host
+    // path, while still satisfying the generated future/wait sequence.
+    if (env_equals("CIRA_OFFLOAD_MODE", "baseline")) {
+        clear_completion(completion);
+        complete_in_software(completion, CIRA_CXL_STATUS_SUCCESS);
+        record_submit_telemetry(kernel_id, CIRA_KERNEL_SUBMIT_OK, "baseline-skip");
+        return CIRA_KERNEL_SUBMIT_OK;
+    }
 
     clear_completion(completion);
     track_active_future(completion);
@@ -2186,6 +2226,7 @@ int cira_offload_submit_kernel(uint64_t kernel_id, const void *typed_args, uint3
 
     track_mmio_completion_submission(completion, window, sequence, 0, CIRA_CXL_JOB_VERSION_KERNEL_ID,
                                      CIRA_CXL_JOB_CALL_V2);
+    record_submit_telemetry(kernel_id, CIRA_KERNEL_SUBMIT_OK, "submitted");
     return CIRA_KERNEL_SUBMIT_OK;
 }
 
@@ -2197,6 +2238,19 @@ void cira_offload_require_success(int submit_status, const void *completion) {
     if (submit_status == CIRA_KERNEL_SUBMIT_OK && magic == CIRA_CXL_COMPLETION_MAGIC &&
         completion_status == CIRA_CXL_STATUS_SUCCESS)
         return;
+
+    // A native correctness run has no simulated CXL device.  Keep its host
+    // result, but report that this run provides no device-coverage evidence.
+    // gem5 and hardware proof runs set CIRA_OFFLOAD_REQUIRE_DEVICE=1 and keep
+    // the fail-closed behavior below.
+    if (env_equals("CIRA_OFFLOAD_MODE", "forced-debug") &&
+        submit_status == CIRA_KERNEL_SUBMIT_ENOMMIO &&
+        !env_flag_enabled("CIRA_OFFLOAD_REQUIRE_DEVICE")) {
+        static std::atomic<bool> reported_no_device{false};
+        if (!reported_no_device.exchange(true))
+            std::cerr << "cira_offload: no-device; preserving native host result" << std::endl;
+        return;
+    }
 
     std::cerr << "cira_offload_require_success: kernel offload failed"
               << " (submit_status=" << submit_status << ", completion_magic=0x" << std::hex << magic << std::dec

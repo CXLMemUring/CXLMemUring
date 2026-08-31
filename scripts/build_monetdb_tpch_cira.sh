@@ -8,7 +8,7 @@ mode=""
 
 while (( $# )); do
   case "$1" in
-    --contract-only|--check-units|--server-only)
+    --contract-only|--check-units|--server-only|--runner)
       [[ -z "${mode}" ]] || { echo "only one build mode may be selected" >&2; exit 2; }
       mode="$1"
       shift
@@ -85,5 +85,18 @@ if [[ "${mode}" == "--check-units" ]]; then
     --check-units --units "${units_file}" --contract "${contract}"
 fi
 
-exec python3 "${repo_root}/scripts/monetdb_cira_compile.py" \
+python3 "${repo_root}/scripts/monetdb_cira_compile.py" \
   --build-server --units "${units_file}" --contract "${contract}"
+
+if [[ "${mode}" == "--runner" ]]; then
+  runner_build="${repo_root}/build/tpch-runner"
+  monetdb_build="${repo_root}/build/monetdb-cira-native"
+  runner_output="${repo_root}/bin/monetdb/x86_64-unknown-linux-gnu/monetdb-tpch-cira"
+  cmake -S "${repo_root}/bench/tpch_runner" -B "${runner_build}" \
+    -DMONETDB_SOURCE_DIR="${repo_root}/bench/MonetDB" \
+    -DMONETDB_BUILD_DIR="${monetdb_build}" \
+    -DCIRA_ROOT="${repo_root}"
+  cmake --build "${runner_build}" --parallel
+  mkdir -p "$(dirname "${runner_output}")"
+  cmake -E copy "${runner_build}/monetdb-tpch-cira" "${runner_output}"
+fi

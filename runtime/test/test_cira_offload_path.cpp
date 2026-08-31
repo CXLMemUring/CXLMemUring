@@ -18,6 +18,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -312,6 +314,45 @@ void test_kernel_id_submit() {
     check(no_mmio_line->magic == CIRA_CXL_COMPLETION_MAGIC && no_mmio_line->status == CIRA_CXL_STATUS_BAD_JOB,
           "missing MMIO publishes an explicit failure status");
     cira::runtime::cira_future_free(no_mmio_completion);
+
+    setenv("CIRA_OFFLOAD_MODE", "baseline", 1);
+    char telemetry_path[] = "/tmp/cira-offload-telemetry.XXXXXX";
+    int telemetry_fd = mkstemp(telemetry_path);
+    check(telemetry_fd >= 0, "query telemetry test creates an output file");
+    if (telemetry_fd >= 0)
+        close(telemetry_fd);
+    setenv("CIRA_OFFLOAD_TELEMETRY", telemetry_path, 1);
+    cira::runtime::cira_offload_set_query_context(6);
+    void *baseline_completion = cira::runtime::cira_future_alloc();
+    rc = cira::runtime::cira_offload_submit_kernel(kKernelId, &typed_args, sizeof(typed_args), baseline_completion, 0);
+    check(rc == cira::runtime::CIRA_KERNEL_SUBMIT_OK,
+          "baseline mode skips the missing device and completes the host path");
+    auto *baseline_line = static_cast<cira_cxl_completion_t *>(baseline_completion);
+    check(baseline_line->magic == CIRA_CXL_COMPLETION_MAGIC &&
+              baseline_line->status == CIRA_CXL_STATUS_SUCCESS,
+          "baseline mode publishes a successful software completion");
+    cira::runtime::cira_offload_require_success(rc, baseline_completion);
+    cira::runtime::cira_future_free(baseline_completion);
+    std::ifstream telemetry_stream(telemetry_path);
+    std::string telemetry((std::istreambuf_iterator<char>(telemetry_stream)),
+                          std::istreambuf_iterator<char>());
+    check(telemetry.find("\"query_id\":6") != std::string::npos &&
+              telemetry.find("\"kernel_id\":\"0x0123456789abcdef\"") != std::string::npos,
+          "submit telemetry attributes the kernel to the active query");
+    cira::runtime::cira_offload_set_query_context(0);
+    unsetenv("CIRA_OFFLOAD_TELEMETRY");
+    unlink(telemetry_path);
+    unsetenv("CIRA_OFFLOAD_MODE");
+
+    setenv("CIRA_OFFLOAD_MODE", "forced-debug", 1);
+    void *native_forced_completion = cira::runtime::cira_future_alloc();
+    rc = cira::runtime::cira_offload_submit_kernel(kKernelId, &typed_args, sizeof(typed_args),
+                                                   native_forced_completion, 0);
+    check(rc == cira::runtime::CIRA_KERNEL_SUBMIT_ENOMMIO,
+          "native forced-debug reports a missing device");
+    cira::runtime::cira_offload_require_success(rc, native_forced_completion);
+    cira::runtime::cira_future_free(native_forced_completion);
+    unsetenv("CIRA_OFFLOAD_MODE");
 
     pid_t child = fork();
     check(child >= 0, "fail-closed completion check starts a child process");
