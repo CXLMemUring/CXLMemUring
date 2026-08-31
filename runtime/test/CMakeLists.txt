@@ -18,6 +18,7 @@ cira_add_runtime_test(test_cira_jit test_cira_jit.cpp)
 # Runs against an emulated (anonymous-memory) window, so no FPGA is needed.
 cira_add_runtime_test(test_cira_offload_path test_cira_offload_path.cpp)
 cira_add_runtime_test(test_cira_cache_completion_path test_cira_cache_completion_path.cpp)
+cira_add_runtime_test(test_cira_kernel_call_abi test_cira_kernel_call_abi.cpp)
 
 # Offload engine / two-pass profiling.
 cira_add_runtime_test(test_offload_engine test_offload_engine.cpp)

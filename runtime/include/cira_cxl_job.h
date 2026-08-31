@@ -30,8 +30,11 @@ extern "C" {
 #define CIRA_CXL_JOB_MAGIC 0x565843584c4a4f42ULL
 #define CIRA_CXL_PACC_JOB_MAGIC 0x4847505550414343ULL
 #define CIRA_CXL_JOB_VERSION 1u
+#define CIRA_CXL_JOB_VERSION_KERNEL_ID 2u
 #define CIRA_CXL_COMPLETION_MAGIC 0xDEADBEEFu
 #define CIRA_CXL_CACHELINE_SIZE 64u
+
+#define CIRA_CXL_JOB_CALL_V2 5u
 
 #define CIRA_CXL_CONTROL_BYTES 0x2000ULL
 #define CIRA_CXL_DOORBELL_OFF 0x0ULL
@@ -45,7 +48,7 @@ typedef enum {
     CIRA_CXL_JOB_PREFETCH_CHAIN = 2, // cira.prefetch_indirect
     CIRA_CXL_JOB_STREAM_PREFETCH = 3, // cira.prefetch_stream
     CIRA_CXL_JOB_CALL = 4, // cira.offload / cira.speculate
-    CIRA_CXL_JOB_MAX = CIRA_CXL_JOB_CALL,
+    CIRA_CXL_JOB_MAX = CIRA_CXL_JOB_CALL_V2,
 } cira_cxl_job_id_t;
 
 typedef enum {
@@ -136,7 +139,19 @@ typedef struct {
     uint64_t completion_addr;
     uint32_t num_operands;
     uint32_t reserved;
-} cira_cxl_call_job_t;
+} cira_cxl_call_job_v1_t;
+
+// Source-compatible name retained for existing v1 host and firmware code.
+typedef cira_cxl_call_job_v1_t cira_cxl_call_job_t;
+
+typedef struct {
+    uint64_t kernel_id;
+    uint64_t args_offset;
+    uint64_t completion_offset;
+    uint32_t args_size;
+    uint32_t flags;
+    uint64_t reserved;
+} cira_cxl_call_job_v2_t;
 
 static inline int cira_cxl_valid_magic(uint64_t magic) {
     return magic == CIRA_CXL_JOB_MAGIC || magic == CIRA_CXL_PACC_JOB_MAGIC;

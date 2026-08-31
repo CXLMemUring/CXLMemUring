@@ -327,13 +327,17 @@ void cira_mmio_set_device_func(void *func) { g_device_func.store(func, std::memo
 // Job submission
 // ---------------------------------------------------------------------------
 
-int cira_mmio_submit_job(cira_mmio_window_t *w, uint32_t job_id, const void *args, uint64_t arg_len, uint32_t flags,
-                         uint64_t *out_seq) {
+static int cira_mmio_submit_job_versioned(cira_mmio_window_t *w, uint32_t version, uint32_t job_id,
+                                          const void *args, uint64_t arg_len, uint32_t flags,
+                                          uint64_t *out_seq) {
     if (!w || !w->base)
         return CIRA_MMIO_ENODEV;
     if (w->read_only)
         return CIRA_MMIO_EINVAL;
     if (job_id == CIRA_CXL_JOB_NOP || job_id > CIRA_CXL_JOB_MAX)
+        return CIRA_MMIO_EINVAL;
+    if ((job_id == CIRA_CXL_JOB_CALL_V2 && version != CIRA_CXL_JOB_VERSION_KERNEL_ID) ||
+        (job_id != CIRA_CXL_JOB_CALL_V2 && version != CIRA_CXL_JOB_VERSION))
         return CIRA_MMIO_EINVAL;
     if (arg_len > CIRA_CXL_ARG_PAYLOAD_BYTES)
         return CIRA_MMIO_ERANGE;
@@ -357,18 +361,26 @@ int cira_mmio_submit_job(cira_mmio_window_t *w, uint32_t job_id, const void *arg
         cira_mmio_fence();
     }
 
-    cira_cxl_arg_slot_t header = {CIRA_CXL_JOB_MAGIC, CIRA_CXL_JOB_VERSION, job_id, seq, arg_len};
+    cira_cxl_arg_slot_t header = {CIRA_CXL_JOB_MAGIC, version, job_id, seq, arg_len};
     store_bytes(w->base + slot_off, &header, sizeof(header));
     cira_mmio_fence();
 
     cira_cxl_doorbell_t doorbell = {
-        CIRA_CXL_JOB_MAGIC, CIRA_CXL_JOB_VERSION, job_id, flags, CIRA_CXL_STATUS_RUNNING, seq};
+        CIRA_CXL_JOB_MAGIC, version, job_id, flags, CIRA_CXL_STATUS_RUNNING, 0};
     store_bytes(w->base + CIRA_CXL_DOORBELL_OFF, &doorbell, sizeof(doorbell));
+    cira_mmio_fence();
+    *reinterpret_cast<volatile uint64_t *>(
+        w->base + CIRA_CXL_DOORBELL_OFF + offsetof(cira_cxl_doorbell_t, seq)) = seq;
     cira_mmio_fence();
 
     if (out_seq)
         *out_seq = seq;
     return CIRA_MMIO_OK;
+}
+
+int cira_mmio_submit_job(cira_mmio_window_t *w, uint32_t job_id, const void *args, uint64_t arg_len, uint32_t flags,
+                         uint64_t *out_seq) {
+    return cira_mmio_submit_job_versioned(w, CIRA_CXL_JOB_VERSION, job_id, args, arg_len, flags, out_seq);
 }
 
 int cira_mmio_submit_call_device(cira_mmio_window_t *w, void *func, void **operands, uint32_t num_operands,
@@ -401,6 +413,25 @@ int cira_mmio_submit_call(cira_mmio_window_t *w, void *func, void **operands, ui
         (uint64_t)(uintptr_t)target, (uint64_t)(uintptr_t)operands, (uint64_t)(uintptr_t)completion, num_operands, 0,
     };
     return cira_mmio_submit_job(w, CIRA_CXL_JOB_CALL, &job, sizeof(job), 0, out_seq);
+}
+
+int cira_mmio_submit_kernel(cira_mmio_window_t *w, uint64_t kernel_id, uint64_t args_offset, uint32_t args_size,
+                            uint64_t completion_offset, uint32_t flags, uint64_t *out_seq) {
+    if (kernel_id == 0)
+        return CIRA_MMIO_EINVAL;
+    if (completion_offset & (CIRA_CXL_CACHELINE_SIZE - 1))
+        return CIRA_MMIO_EINVAL;
+    if ((args_size && args_offset > UINT64_MAX - args_size) ||
+        completion_offset > UINT64_MAX - CIRA_CXL_CACHELINE_SIZE)
+        return CIRA_MMIO_ERANGE;
+
+    static_assert(sizeof(cira_cxl_call_job_v2_t) <= CIRA_CXL_ARG_PAYLOAD_BYTES,
+                  "kernel call descriptor must fit in one argument slot");
+    cira_cxl_call_job_v2_t job = {
+        kernel_id, args_offset, completion_offset, args_size, flags, 0,
+    };
+    return cira_mmio_submit_job_versioned(w, CIRA_CXL_JOB_VERSION_KERNEL_ID,
+                                          CIRA_CXL_JOB_CALL_V2, &job, sizeof(job), flags, out_seq);
 }
 
 int cira_mmio_wait_seq(const cira_mmio_window_t *w, uint64_t seq, uint64_t timeout_ns) {
