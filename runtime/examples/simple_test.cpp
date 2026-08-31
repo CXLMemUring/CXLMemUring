@@ -39,12 +39,14 @@ int main() {
 
     auto* edge_data = memory_manager->allocateRemote(
         sizeof(Edge) * num_edges,
-        MemoryTier::CXL_ATTACHED
+        MemoryTier::CXL_ATTACHED,
+        sizeof(Edge)
     );
 
     auto* node_data = memory_manager->allocateRemote(
         sizeof(Node) * num_nodes,
-        MemoryTier::LOCAL_DRAM
+        MemoryTier::LOCAL_DRAM,
+        sizeof(Node)
     );
 
     // Initialize data

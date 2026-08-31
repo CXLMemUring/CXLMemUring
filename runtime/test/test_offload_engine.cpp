@@ -24,10 +24,12 @@ int main() {
     size_t num_edges = 1000;
     auto* edge_ref = memory_manager->allocateRemote(
         sizeof(TestEdge) * num_edges,
-        MemoryTier::CXL_ATTACHED
+        MemoryTier::CXL_ATTACHED,
+        sizeof(TestEdge)
     );
     assert(edge_ref != nullptr);
     assert(edge_ref->size == sizeof(TestEdge) * num_edges);
+    assert(edge_ref->element_size == sizeof(TestEdge));
     std::cout << "  ✓ Allocated " << edge_ref->size << " bytes in CXL memory\n";
 
     // Initialize edge data
@@ -56,14 +58,19 @@ int main() {
         TestEdge* e = static_cast<TestEdge*>(batch_results[i]);
         assert(e->from == static_cast<int>(10 + i));
     }
+    assert(offload_engine->loadEdge(edge_ref, num_edges, 0) == nullptr);
     std::cout << "  ✓ Batch loaded 10 edges successfully\n";
 
     // Test 4: Load node data
     std::cout << "Test 4: Node data loading\n";
-    void* node_from = offload_engine->loadNode(edge_ptr, "from", 1);
-    void* node_to = offload_engine->loadNode(edge_ptr, "to", 1);
-    assert(node_from != nullptr);
-    assert(node_to != nullptr);
+    int from_node = 10;
+    int to_node = 11;
+    void* pointer_edge[] = {&from_node, &to_node};
+    void* node_from = offload_engine->loadNode(pointer_edge, "from", 1);
+    void* node_to = offload_engine->loadNode(pointer_edge, "to", 1);
+    assert(node_from == &from_node);
+    assert(node_to == &to_node);
+    assert(offload_engine->loadNode(pointer_edge, "weight", 0) == nullptr);
     std::cout << "  ✓ Loaded node data for 'from' and 'to' fields\n";
 
     // Test 5: Get physical address
@@ -88,6 +95,9 @@ int main() {
     memory_manager->migrate(edge_ref, MemoryTier::LOCAL_DRAM);
     auto new_tier = memory_manager->getTier(edge_ref);
     assert(new_tier == MemoryTier::LOCAL_DRAM);
+    edges = static_cast<TestEdge*>(memory_manager->mapRemote(edge_ref));
+    assert(edges[10].from == 10);
+    assert(edges[10].to == 11);
     std::cout << "  ✓ Migrated from CXL to LOCAL_DRAM\n";
 
     // Test 8: Memory statistics
@@ -99,6 +109,8 @@ int main() {
 
     // Cleanup
     memory_manager->deallocateRemote(edge_ref);
+    assert(memory_manager->getUsedMemory(MemoryTier::CXL_ATTACHED) == 0);
+    assert(memory_manager->getUsedMemory(MemoryTier::LOCAL_DRAM) == 0);
     std::cout << "\n✅ All tests passed!\n";
 
     return 0;

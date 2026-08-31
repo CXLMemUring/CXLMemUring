@@ -57,13 +57,15 @@ public:
         // Allocate edge data in CXL memory
         edge_data = memory_manager->allocateRemote(
             sizeof(Edge) * num_edges,
-            MemoryTier::CXL_ATTACHED
+            MemoryTier::CXL_ATTACHED,
+            sizeof(Edge)
         );
 
         // Allocate node data in local DRAM for faster access
         node_data = memory_manager->allocateRemote(
             sizeof(Node) * num_nodes,
-            MemoryTier::LOCAL_DRAM
+            MemoryTier::LOCAL_DRAM,
+            sizeof(Node)
         );
 
         // Initialize edges with random connections
@@ -131,13 +133,8 @@ public:
                 for (size_t j = 0; j < batch_size; j++) {
                     Edge* edge = static_cast<Edge*>(edge_batch[j]);
 
-                    // Load node data with prefetching
-                    Node* from_node = static_cast<Node*>(
-                        offload_engine->loadNode(edge, "from", 1)
-                    );
-                    Node* to_node = static_cast<Node*>(
-                        offload_engine->loadNode(edge, "to", 1)
-                    );
+                    // This edge representation stores node indices, not pointers.
+                    Node* from_node = &nodes[edge->from];
 
                     // PageRank computation
                     if (from_node->degree > 0) {

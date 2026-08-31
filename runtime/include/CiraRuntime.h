@@ -52,6 +52,7 @@ struct RemoteMemRef {
     size_t size;
     MemoryTier tier;
     uint64_t metadata;
+    size_t element_size;
 };
 
 // Access profile for optimization
@@ -111,7 +112,8 @@ public:
     virtual ~RemoteMemoryManager() = default;
 
     // Allocation and deallocation
-    virtual RemoteMemRef* allocateRemote(size_t size, MemoryTier tier) = 0;
+    virtual RemoteMemRef* allocateRemote(size_t size, MemoryTier tier,
+                                         size_t element_size = sizeof(void*)) = 0;
     virtual void deallocateRemote(RemoteMemRef* ref) = 0;
 
     // Memory mapping

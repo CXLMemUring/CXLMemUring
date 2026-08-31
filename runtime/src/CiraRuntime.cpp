@@ -581,9 +581,14 @@ private:
 
 public:
     void *loadEdge(RemoteMemRef *edge_ptr, size_t index, size_t prefetch_distance) override {
+        if (!edge_ptr || !edge_ptr->base_addr || edge_ptr->element_size == 0 ||
+            index >= edge_ptr->size / edge_ptr->element_size) {
+            return nullptr;
+        }
+
         // Calculate address
-        uintptr_t addr =
-            reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (index * sizeof(void *)); // Assuming edge size
+        uintptr_t addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) +
+                         (index * edge_ptr->element_size);
 
         // Check cache
         auto it = edge_cache_.find(addr);
@@ -595,8 +600,10 @@ public:
         if (prefetch_distance > 0) {
             for (size_t i = 1; i <= prefetch_distance; i++) {
                 size_t prefetch_index = index + i * cache_line_size_;
-                uintptr_t prefetch_addr =
-                    reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (prefetch_index * sizeof(void *));
+                if (prefetch_index >= edge_ptr->size / edge_ptr->element_size)
+                    break;
+                uintptr_t prefetch_addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) +
+                                          (prefetch_index * edge_ptr->element_size);
                 __builtin_prefetch(reinterpret_cast<void *>(prefetch_addr), 0, 3);
             }
         }
@@ -611,7 +618,13 @@ public:
     }
 
     void evictEdge(RemoteMemRef *edge_ptr, size_t index) override {
-        uintptr_t addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (index * sizeof(void *));
+        if (!edge_ptr || !edge_ptr->base_addr || edge_ptr->element_size == 0 ||
+            index >= edge_ptr->size / edge_ptr->element_size) {
+            return;
+        }
+
+        uintptr_t addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) +
+                         (index * edge_ptr->element_size);
 
         auto it = edge_cache_.find(addr);
         if (it != edge_cache_.end()) {
@@ -670,11 +683,30 @@ private:
     std::unordered_map<RemoteMemRef *, Allocation> allocations_;
     std::unordered_map<void *, RemoteMemRef *> addr_to_ref_;
 
+    void releaseAllocationMemory(const Allocation &allocation) {
+#ifdef NUMA_SUPPORT
+        if ((allocation.tier == MemoryTier::CXL_ATTACHED || allocation.tier == MemoryTier::CXL_POOLED ||
+             allocation.tier == MemoryTier::CXL_TYPE2_MEM || allocation.tier == MemoryTier::CXL_TYPE2_CACHE) &&
+            numa_available() != -1 && allocation.numa_node > 0) {
+            numa_free(allocation.addr, allocation.size);
+#else
+        if (false) {
+#endif
+        } else {
+            munmap(allocation.addr, allocation.size);
+        }
+    }
+
 public:
-    RemoteMemRef *allocateRemote(size_t size, MemoryTier tier) override {
+    RemoteMemRef *allocateRemote(size_t size, MemoryTier tier, size_t element_size) override {
+        if (element_size == 0)
+            return nullptr;
+
         auto *ref = new RemoteMemRef();
         ref->size = size;
         ref->tier = tier;
+        ref->metadata = 0;
+        ref->element_size = element_size;
 
         // Allocate based on tier
         void *addr = nullptr;
@@ -720,6 +752,11 @@ public:
             break;
         }
 
+        if (!addr || addr == MAP_FAILED) {
+            delete ref;
+            return nullptr;
+        }
+
         ref->base_addr = addr;
         allocations_[ref] = {addr, size, tier, numa_node};
         addr_to_ref_[addr] = ref;
@@ -730,18 +767,7 @@ public:
     void deallocateRemote(RemoteMemRef *ref) override {
         auto it = allocations_.find(ref);
         if (it != allocations_.end()) {
-#ifdef NUMA_SUPPORT
-            if ((it->second.tier == MemoryTier::CXL_ATTACHED || it->second.tier == MemoryTier::CXL_POOLED ||
-                 it->second.tier == MemoryTier::CXL_TYPE2_MEM || it->second.tier == MemoryTier::CXL_TYPE2_CACHE) &&
-                numa_available() != -1 && it->second.numa_node > 0) {
-                numa_free(it->second.addr, it->second.size);
-#else
-            if (false) {
-                // Never executed, just for structure
-#endif
-            } else {
-                munmap(it->second.addr, it->second.size);
-            }
+            releaseAllocationMemory(it->second);
             addr_to_ref_.erase(it->second.addr);
             allocations_.erase(it);
         }
@@ -759,15 +785,32 @@ public:
         if (it == allocations_.end())
             return;
 
+        if (it->second.tier == new_tier)
+            return;
+
+        const Allocation old_allocation = it->second;
+        const uint64_t metadata = ref->metadata;
+
         // Allocate new memory in target tier
-        RemoteMemRef *new_ref = allocateRemote(ref->size, new_tier);
+        RemoteMemRef *new_ref = allocateRemote(ref->size, new_tier, ref->element_size);
+        if (!new_ref)
+            return;
 
         // Copy data
         memcpy(new_ref->base_addr, ref->base_addr, ref->size);
 
-        // Update mappings
-        deallocateRemote(ref);
+        // Preserve the caller-owned reference while replacing its allocation.
+        const Allocation new_allocation = allocations_.at(new_ref);
+        releaseAllocationMemory(old_allocation);
+        addr_to_ref_.erase(old_allocation.addr);
+        allocations_.erase(ref);
+        addr_to_ref_.erase(new_allocation.addr);
+        allocations_.erase(new_ref);
+
         *ref = *new_ref;
+        ref->metadata = metadata;
+        allocations_[ref] = new_allocation;
+        addr_to_ref_[ref->base_addr] = ref;
         delete new_ref;
     }
 
@@ -1180,7 +1223,7 @@ public:
         // Initialize graph data structures in remote memory
         if (!graph->edges) {
             graph->edges = mem_mgr->allocateRemote(graph->num_edges * sizeof(void *) * 2, // from and to pointers
-                                                   MemoryTier::CXL_ATTACHED);
+                                                   MemoryTier::CXL_ATTACHED, sizeof(void *) * 2);
         }
 
         if (!graph->vertices) {
