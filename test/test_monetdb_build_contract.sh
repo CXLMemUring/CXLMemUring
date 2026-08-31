@@ -42,7 +42,8 @@ expected = [
 records = contract.get("units")
 assert isinstance(records, list), "build contract has no unit records"
 assert [record.get("source") for record in records] == expected, "contract source order differs from target list"
-required = {"cir-mlir-scf-prepare", "cir-to-mlir", "cir-to-cira", "cira-region-formation",
+required = {"cir-flatten-cfg", "cir-goto-solver", "cir-mlir-scf-prepare", "cir-lower-to-mlir",
+            "cir-to-cira", "cira-region-formation",
             "cira-outline-rv64-kernels", "convert-cira-to-llvm-hetero",
             "cira-prune-unreachable-blocks", "convert-to-llvm", "convert-ub-to-llvm",
             "cira-finalize-llvm-materializations"}

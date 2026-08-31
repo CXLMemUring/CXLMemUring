@@ -12,8 +12,10 @@ import time
 
 
 PASSES = [
+    "cir-flatten-cfg",
+    "cir-goto-solver",
     "cir-mlir-scf-prepare",
-    "cir-to-mlir",
+    "cir-lower-to-mlir",
     "cir-to-cira",
     "cira-region-formation",
     "cira-outline-rv64-kernels",
@@ -70,11 +72,10 @@ def configure(root: pathlib.Path, build: pathlib.Path) -> None:
 
 def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathlib.Path) -> dict:
     clang = pathlib.Path(os.environ.get("CLANGIR_BIN", root.parent / "clangir/build/bin/clang"))
-    cir_opt = pathlib.Path(os.environ.get("CLANGIR_OPT_BIN", root.parent / "clangir/build/bin/cir-opt"))
     cira = pathlib.Path(os.environ.get("CIRA_BIN", root / "build/bin/cira"))
     mlir_translate = pathlib.Path(os.environ.get("MLIR_TRANSLATE_BIN", root.parent / "clangir/build/bin/mlir-translate"))
     llc = pathlib.Path(os.environ.get("LLC_BIN", root.parent / "clangir/build/bin/llc"))
-    for tool in (clang, cir_opt, cira, mlir_translate, llc):
+    for tool in (clang, cira, mlir_translate, llc):
         if not tool.is_file() or not os.access(tool, os.X_OK):
             fail(f"required tool is not executable: {tool}")
 
@@ -100,9 +101,6 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
     unit_dir = work / stem
     unit_dir.mkdir(parents=True, exist_ok=True)
     cir = unit_dir / "input.cir"
-    mlir = unit_dir / "input.mlir"
-    cira_input = unit_dir / "input.cira.mlir"
-    outlined = unit_dir / "outlined.mlir"
     lowered = unit_dir / "host.llvm.mlir"
     llvm_ir = unit_dir / "host.ll"
     host_object = unit_dir / "host.o"
@@ -117,39 +115,38 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
     )
     if not cir.is_file() or cir.stat().st_size == 0:
         fail(f"frontend produced no CIR for {source_rel}")
-    timings["cir_to_mlir_seconds"] = run(
-        [str(cir_opt), "-mlir-print-op-on-diagnostic=false", "-allow-unregistered-dialect",
-         "-cir-mlir-scf-prepare", "-cir-to-mlir",
-         str(cir), "-o", str(mlir)],
-        logs / "02-cir-to-mlir.log", cwd=root,
-    )
-    timings["cir_to_cira_seconds"] = run(
-        [str(cira), "-allow-unregistered-dialect", str(mlir), "--cir-to-cira", "-o", str(cira_input)],
-        logs / "03-cir-to-cira.log", cwd=root,
-    )
-    timings["outline_seconds"] = run(
-        [str(cira), "-allow-unregistered-dialect", str(cira_input),
-         "--cira-region-formation=require-profitable=false",
-         f"--cira-outline-rv64-kernels=manifest={manifest} module-id=monetdb", "-o", str(outlined)],
-        logs / "04-region-outline.log", cwd=root,
-    )
-    timings["host_lowering_seconds"] = run(
-        [str(cira), "-allow-unregistered-dialect", str(outlined),
-         "--pass-pipeline=builtin.module(symbol-dce,convert-cira-to-llvm-hetero,convert-scf-to-cf,"
-         "cira-prune-unreachable-blocks,convert-cf-to-llvm,convert-to-llvm,cse,"
-         "convert-ub-to-llvm,reconcile-unrealized-casts,cira-finalize-llvm-materializations)",
-         "-o", str(lowered)],
-        logs / "05-host-lowering.log", cwd=root,
+    pipeline = "builtin.module(" + ",".join([
+        "cir-flatten-cfg",
+        "cir-goto-solver",
+        "cir-mlir-scf-prepare",
+        "cir-lower-to-mlir",
+        "cir-to-cira",
+        "cira-region-formation{require-profitable=false}",
+        f"cira-outline-rv64-kernels{{manifest={manifest} module-id=monetdb}}",
+        "convert-cira-to-llvm-hetero",
+        "convert-scf-to-cf",
+        "cira-prune-unreachable-blocks",
+        "convert-cf-to-llvm",
+        "convert-to-llvm",
+        "cse",
+        "convert-ub-to-llvm",
+        "reconcile-unrealized-casts",
+        "cira-finalize-llvm-materializations",
+    ]) + ")"
+    timings["cira_pipeline_seconds"] = run(
+        [str(cira), "-mlir-print-op-on-diagnostic=false", "-allow-unregistered-dialect",
+         str(cir), f"--pass-pipeline={pipeline}", "-o", str(lowered)],
+        logs / "02-cira-pipeline.log", cwd=root, timeout=1800,
     )
     timings["llvm_translation_seconds"] = run(
         [str(mlir_translate), "--allow-unregistered-dialect", "--mlir-to-llvmir", str(lowered),
          "-o", str(llvm_ir)],
-        logs / "06-llvm-translation.log", cwd=root,
+        logs / "03-llvm-translation.log", cwd=root,
     )
     timings["object_codegen_seconds"] = run(
         [str(llc), "-O2", "-filetype=obj", "-relocation-model=pic", "-disable-cgp",
          "-mtriple=x86_64-unknown-linux-gnu", str(llvm_ir), "-o", str(host_object)],
-        logs / "07-object-codegen.log", cwd=root,
+        logs / "04-object-codegen.log", cwd=root,
     )
 
     kernel_ids: list[str] = []
@@ -167,8 +164,7 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
         "object": str(host_object),
         "kernel_ids": kernel_ids,
         "artifacts": {
-            "cir": str(cir), "mlir": str(mlir), "outlined": str(outlined),
-            "host_llvm_mlir": str(lowered), "llvm_ir": str(llvm_ir),
+            "cir": str(cir), "host_llvm_mlir": str(lowered), "llvm_ir": str(llvm_ir),
             "host_object": str(host_object), "manifest": str(manifest),
         },
         "timings": timings,

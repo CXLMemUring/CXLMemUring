@@ -30,6 +30,16 @@ func.func @direct(%data: memref<?xf32, 1>, %n: index) -> f32 {
   return %v : f32
 }
 
+// A memcpy reads from the host while writing remote memory. The current
+// device milestone is read-only, so the read effect must not make it a root.
+// CHECK-LABEL: func.func @remote_memcpy
+// CHECK-NOT: cira.offload
+func.func @remote_memcpy(%remote: !llvm.ptr<1>, %host: !llvm.ptr) {
+  %c8 = arith.constant 8 : i64
+  "llvm.intr.memcpy"(%remote, %host, %c8) <{isVolatile = false}> : (!llvm.ptr<1>, !llvm.ptr, i64) -> ()
+  return
+}
+
 // CHECK-LABEL: func.func @chase
 
 // RUN: cira %s --cira-region-formation | FileCheck %s --check-prefix=PGO

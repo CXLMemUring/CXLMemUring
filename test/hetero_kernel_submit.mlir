@@ -1,6 +1,11 @@
 // RUN: cira %s --convert-cira-to-llvm-hetero | FileCheck %s
 
 module {
+  llvm.func @materialize_remote(%bits: i64) -> !llvm.ptr<1> {
+    %remote = builtin.unrealized_conversion_cast %bits : i64 to !llvm.ptr<1>
+    llvm.return %remote : !llvm.ptr<1>
+  }
+
   func.func @submit_kernel(%remote: !llvm.ptr<1>, %limit: i32) -> i64 {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index

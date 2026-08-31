@@ -37,8 +37,10 @@ import sys
 
 units_path, contract_path, root = map(pathlib.Path, sys.argv[1:])
 passes = [
+    "cir-flatten-cfg",
+    "cir-goto-solver",
     "cir-mlir-scf-prepare",
-    "cir-to-mlir",
+    "cir-lower-to-mlir",
     "cir-to-cira",
     "cira-region-formation",
     "cira-outline-rv64-kernels",

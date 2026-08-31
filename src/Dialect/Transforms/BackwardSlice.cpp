@@ -183,7 +183,18 @@ private:
 
         bool sawPredecessor = false;
         RemoteProvenance joined = RemoteProvenance::Unknown;
+        Region *parentRegion = arg.getOwner()->getParent();
+        if (!parentRegion)
+            return RemoteProvenance::Unknown;
+        DenseSet<Block *> attachedBlocks;
+        for (Block &block : *parentRegion)
+            attachedBlocks.insert(&block);
         for (Block *predecessor : arg.getOwner()->getPredecessors()) {
+            // Some CIR CFG cleanup paths leave detached blocks in the cached
+            // predecessor list. Never dereference those stale pointers; an
+            // uncertain incoming edge makes provenance Unknown.
+            if (!attachedBlocks.contains(predecessor) || predecessor->empty())
+                return RemoteProvenance::Unknown;
             Operation *terminator = predecessor->getTerminator();
             auto branch = dyn_cast<BranchOpInterface>(terminator);
             if (!branch)

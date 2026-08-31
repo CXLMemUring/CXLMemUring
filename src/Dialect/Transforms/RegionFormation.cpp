@@ -81,6 +81,18 @@ static bool feedsAnotherMemoryAddress(Operation *root) {
     return false;
 }
 
+static bool hasForbiddenDeviceWrite(Operation *op) {
+    auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!effects)
+        return false;
+    SmallVector<MemoryEffects::EffectInstance> instances;
+    effects.getEffects(instances);
+    return llvm::any_of(instances, [](const MemoryEffects::EffectInstance &effect) {
+        return isa<MemoryEffects::Write, MemoryEffects::Allocate,
+                   MemoryEffects::Free>(effect.getEffect());
+    });
+}
+
 class CiraRegionFormationPass : public impl::CiraRegionFormationBase<CiraRegionFormationPass> {
 public:
     using impl::CiraRegionFormationBase<CiraRegionFormationPass>::CiraRegionFormationBase;
@@ -150,7 +162,7 @@ public:
 private:
     bool buildCandidate(Operation *root, RegionCandidate &candidate) {
         // Device writes are outside this read-only milestone.
-        if (!isMemoryRead(root))
+        if (!isMemoryRead(root) || hasForbiddenDeviceWrite(root))
             return false;
 
         SliceOptions options;

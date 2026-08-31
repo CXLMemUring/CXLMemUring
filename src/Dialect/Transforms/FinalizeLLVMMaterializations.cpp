@@ -31,6 +31,16 @@ struct CiraFinalizeLLVMMaterializationsPass
 
       mlir::Value input = op.getOperand(0);
       mlir::Value result = op.getResult(0);
+      // Dialect conversion can leave uses owned by operations that have
+      // already been detached from the module. They are not part of the IR
+      // that reaches translation, but keep otherwise-dead materializations
+      // alive. Drop only those stale uses; attached users must still be
+      // converted or diagnosed below.
+      for (mlir::OpOperand &use : llvm::make_early_inc_range(result.getUses())) {
+        mlir::Operation *owner = use.getOwner();
+        if (!owner->getParentOfType<mlir::ModuleOp>())
+          use.drop();
+      }
       if (result.use_empty()) {
         rewriter.eraseOp(op);
         continue;
@@ -47,6 +57,19 @@ struct CiraFinalizeLLVMMaterializationsPass
       if (sourcePointer && resultPointer) {
         rewriter.replaceOpWithNewOp<mlir::LLVM::AddrSpaceCastOp>(
             op, resultPointer, input);
+        continue;
+      }
+
+      auto sourceInteger = mlir::dyn_cast<mlir::IntegerType>(input.getType());
+      auto resultInteger = mlir::dyn_cast<mlir::IntegerType>(result.getType());
+      if (sourceInteger && resultPointer) {
+        rewriter.replaceOpWithNewOp<mlir::LLVM::IntToPtrOp>(
+            op, resultPointer, input);
+        continue;
+      }
+      if (sourcePointer && resultInteger) {
+        rewriter.replaceOpWithNewOp<mlir::LLVM::PtrToIntOp>(
+            op, resultInteger, input);
         continue;
       }
 

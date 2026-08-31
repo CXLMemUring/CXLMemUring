@@ -85,6 +85,32 @@ static std::optional<uint64_t> getPackedByteWidth(Type type) {
     return std::nullopt;
 }
 
+static void declareKernelOffloadRuntime(ModuleOp module) {
+    MLIRContext *ctx = module.getContext();
+    Location loc = module.getLoc();
+    Type ptrType = LLVM::LLVMPointerType::get(ctx);
+    Type i64Type = IntegerType::get(ctx, 64);
+    Type i32Type = IntegerType::get(ctx, 32);
+    Type voidType = LLVM::LLVMVoidType::get(ctx);
+
+    auto declare = [&](StringRef name, Type result, ArrayRef<Type> arguments) {
+        if (module.lookupSymbol(name))
+            return;
+        OpBuilder builder(module.getBodyRegion());
+        builder.setInsertionPointToStart(module.getBody());
+        auto functionType = LLVM::LLVMFunctionType::get(result, arguments, false);
+        builder.create<LLVM::LLVMFuncOp>(loc, name, functionType);
+    };
+
+    declare("cira_offload_arg_offset", i64Type, {ptrType, i64Type});
+    declare("cira_future_alloc", ptrType, {});
+    declare("cira_offload_submit_kernel", i32Type,
+            {i64Type, ptrType, i32Type, ptrType, i32Type});
+    declare("cira_future_await", ptrType, {ptrType});
+    declare("cira_offload_require_success", voidType, {i32Type, ptrType});
+    declare("cira_future_free", voidType, {ptrType});
+}
+
 /// Return the minimum arena extent that contains every typed access reachable
 /// from a remote boundary argument. Device firmware still validates each final
 /// offset; this host-side check prevents even a direct multi-byte access from
@@ -1240,6 +1266,8 @@ struct OffloadRegionOpLowering : public ConversionPattern {
                         } else if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
                             return offloadOp.emitError("arena_offset argument did not lower to a pointer");
                         }
+                        if (pointer.getType() != ptrType)
+                            pointer = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrType, pointer);
                         std::optional<uint64_t> accessBytes =
                             getRemoteAccessBytes(body.getArgument(index), boundaryType);
                         if (!accessBytes)
@@ -1663,6 +1691,11 @@ struct ConvertCiraToLLVMHeteroPass : public PassWrapper<ConvertCiraToLLVMHeteroP
         int kernelId = 0;
         SmallVector<OffloadRegionOp> offloadOps;
         module.walk([&](OffloadRegionOp op) { offloadOps.push_back(op); });
+
+        if (llvm::any_of(offloadOps, [](OffloadRegionOp op) {
+                return op->hasAttr("cira.kernel_id");
+            }))
+            declareKernelOffloadRuntime(module);
 
         for (auto offloadOp : offloadOps) {
             if (offloadOp->hasAttr("cira.kernel_id"))

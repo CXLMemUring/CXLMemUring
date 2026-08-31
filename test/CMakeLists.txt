@@ -87,8 +87,17 @@ set(_CIRA ${CMAKE_BINARY_DIR}/bin/cira)
 set(_OUT ${CMAKE_BINARY_DIR}/test_ctest_out)
 if(CIRA_CLANGIR_BUILD_DIR)
   set(_CLANGIR ${CIRA_CLANGIR_BUILD_DIR}/bin/clang)
+  set(_MLIR_TRANSLATE ${CIRA_CLANGIR_BUILD_DIR}/bin/mlir-translate)
 else()
   set(_CLANGIR ${CMAKE_SOURCE_DIR}/../clangir/build/bin/clang)
+  set(_MLIR_TRANSLATE ${CMAKE_SOURCE_DIR}/../clangir/build/bin/mlir-translate)
+endif()
+
+if(EXISTS ${_MLIR_TRANSLATE})
+  add_test(
+    NAME hetero_kernel_submit_translate
+    COMMAND ${BASH_EXECUTABLE} -lc "${_CIRA} ${CMAKE_SOURCE_DIR}/test/hetero_kernel_submit.mlir '--pass-pipeline=builtin.module(convert-cira-to-llvm-hetero,convert-scf-to-cf,cira-prune-unreachable-blocks,convert-cf-to-llvm,convert-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts,cira-finalize-llvm-materializations)' -o ${_OUT}/hetero-kernel-submit-final.mlir && grep -q 'llvm.inttoptr' ${_OUT}/hetero-kernel-submit-final.mlir && ${_MLIR_TRANSLATE} --mlir-to-llvmir ${_OUT}/hetero-kernel-submit-final.mlir -o ${_OUT}/hetero-kernel-submit.ll"
+  )
 endif()
 
 # Keep the aggregate shell harness bound to this CMake build tree.  This
