@@ -167,6 +167,25 @@ if(CIRA_RUNTIME_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLi
     add_subdirectory(test)
 endif()
 
+# Optional cross-compiled, no-libc RV64 firmware. Keep this as an explicit
+# target because the host runtime and device image use different toolchains.
+set(CIRA_RV64_KERNEL_MANIFEST "" CACHE FILEPATH "Manifest used by the cira_rv64_device target")
+set(CIRA_RV64_KERNEL_SOURCES "" CACHE STRING "RV64 kernel sources/objects used by the cira_rv64_device target")
+if(CIRA_RV64_KERNEL_MANIFEST AND CIRA_RV64_KERNEL_SOURCES)
+    set(CIRA_RV64_DEVICE_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/rv64-device")
+    add_custom_target(cira_rv64_device
+        COMMAND ${CMAKE_COMMAND}
+                -S "${CMAKE_CURRENT_SOURCE_DIR}/device"
+                -B "${CIRA_RV64_DEVICE_BUILD_DIR}"
+                -DCMAKE_C_COMPILER=/usr/bin/riscv64-linux-gnu-gcc
+                -DCMAKE_ASM_COMPILER=/usr/bin/riscv64-linux-gnu-gcc
+                -DCIRA_KERNEL_MANIFEST=${CIRA_RV64_KERNEL_MANIFEST}
+                -DCIRA_KERNEL_SOURCES=${CIRA_RV64_KERNEL_SOURCES}
+        COMMAND ${CMAKE_COMMAND} --build "${CIRA_RV64_DEVICE_BUILD_DIR}" --parallel
+        VERBATIM
+    )
+endif()
+
 # Print configuration summary
 message(STATUS "")
 message(STATUS "CiraRuntime Configuration:")

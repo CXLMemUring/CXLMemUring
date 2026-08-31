@@ -2033,7 +2033,8 @@ void *cira_future_await(void *completion_ptr) {
     //   [8:16]  result   (uint64_t) — kernel-specific result
     //   [16:24] cycles   (uint64_t) — execution cycles
     //   [24:32] timestamp(uint64_t) — completion time
-    //   [32:64] reserved
+    //   [32:40] seq      (uint64_t) — matching doorbell sequence
+    //   [40:64] reserved
     //
     // The wait itself is the paper's cache-resident poll: a bounded PAUSE
     // spin, then MONITOR/UMWAIT (or the best equivalent this host has) on

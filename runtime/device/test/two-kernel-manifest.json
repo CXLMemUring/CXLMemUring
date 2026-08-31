@@ -1,0 +1,27 @@
+{
+  "abi_version": 2,
+  "kernels": [
+    {
+      "kernel_id": "0x0000000000000009",
+      "symbol": "__cira_rv64_0000000000000009",
+      "source": "two-kernels.c:5:1",
+      "query_tags": [6],
+      "args_size": 8,
+      "args": [
+        {"name": "arg0", "offset": 0, "type": "arena_offset"}
+      ],
+      "read_only": true
+    },
+    {
+      "kernel_id": "0x0000000000000002",
+      "symbol": "__cira_rv64_0000000000000002",
+      "source": "two-kernels.c:1:1",
+      "query_tags": [1],
+      "args_size": 8,
+      "args": [
+        {"name": "arg0", "offset": 0, "type": "i64"}
+      ],
+      "read_only": true
+    }
+  ]
+}

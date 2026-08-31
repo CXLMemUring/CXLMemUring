@@ -35,6 +35,7 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 .cache
+__pycache__/
 build
 a.out
 libremote.so

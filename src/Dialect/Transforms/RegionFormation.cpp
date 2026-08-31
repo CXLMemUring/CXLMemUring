@@ -261,8 +261,10 @@ private:
         for (Operation *op : candidate.ops)
             builder.clone(*op, mapping);
         for (Operation *root : candidate.roots)
-            if (!llvm::is_contained(candidate.ops, root))
-                builder.clone(*root, mapping);
+            if (!llvm::is_contained(candidate.ops, root)) {
+                Operation *cloned = builder.clone(*root, mapping);
+                cloned->setAttr("cira.prepared_root", builder.getUnitAttr());
+            }
 
         builder.setInsertionPoint(waitPoint);
         builder.create<BarrierOp>(loc);

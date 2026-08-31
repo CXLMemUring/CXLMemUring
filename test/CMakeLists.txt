@@ -55,6 +55,11 @@ if(FILECHECK_EXECUTABLE)
     NAME hetero_kernel_submit_bad_layout
     COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/hetero_kernel_submit_bad_layout.mlir --convert-cira-to-llvm-hetero >${CMAKE_BINARY_DIR}/test_ctest_out/hetero-bad-layout.out 2>${CMAKE_BINARY_DIR}/test_ctest_out/hetero-bad-layout.err; status=\$?; test \$status -ne 0 && grep -q 'cira.arg_layout field is not naturally aligned' ${CMAKE_BINARY_DIR}/test_ctest_out/hetero-bad-layout.err"
   )
+  add_test(
+    NAME rv64_prepared_root_install
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/test/check_rv64_checked_loads.py
+            ${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_merge_schedule.mlir
+  )
 endif()
 
 add_test(

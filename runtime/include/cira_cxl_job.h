@@ -57,6 +57,9 @@ typedef enum {
     CIRA_CXL_STATUS_BAD_VERSION = 0xffff0001u,
     CIRA_CXL_STATUS_BAD_ARGS = 0xffff0002u,
     CIRA_CXL_STATUS_COMPLETION_IO = 0xffff0003u,
+    CIRA_CXL_STATUS_BAD_DESCRIPTOR = 0xffff0004u,
+    CIRA_CXL_STATUS_UNKNOWN_KERNEL = 0xffff0005u,
+    CIRA_CXL_STATUS_STALE_SEQUENCE = 0xffff0006u,
     CIRA_CXL_STATUS_BAD_JOB = 0xffff00ffu,
 } cira_cxl_status_t;
 
@@ -98,7 +101,8 @@ typedef struct {
     uint64_t result;
     uint64_t cycles;
     uint64_t timestamp;
-    uint8_t reserved[32];
+    uint64_t seq;
+    uint8_t reserved[24];
 } __attribute__((aligned(CIRA_CXL_CACHELINE_SIZE))) cira_cxl_completion_t;
 
 // ---------------------------------------------------------------------------

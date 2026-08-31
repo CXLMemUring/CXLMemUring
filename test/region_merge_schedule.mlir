@@ -8,6 +8,7 @@ func.func private @host_index() -> index
 // CHECK-COUNT-1: cira.offload
 // CHECK-SAME: cira.overlap_ops = 2
 // CHECK-SAME: cira.root_count = 2
+// CHECK: cira.prepared_root
 // CHECK: {{^ *\} *$}}
 // CHECK-NEXT: %{{.*}} = memref.load %arg0
 // CHECK-NEXT: %{{.*}} = arith.index_cast

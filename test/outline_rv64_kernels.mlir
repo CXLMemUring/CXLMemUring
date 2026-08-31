@@ -25,4 +25,10 @@ module {
   // CHECK-SAME: cira.kernel_id =
   // CHECK-SAME: cira.read_only
   // CHECK-SAME: cira.rv64_kernel
+  // CHECK: call @cira_device_checked_load
+  // CHECK: call @cira_device_checked_load
+  // CHECK: call @cira_device_checked_load
+  // CHECK-NOT: llvm.load
+  // CHECK-NOT: memref.load
+  // CHECK: return
 }

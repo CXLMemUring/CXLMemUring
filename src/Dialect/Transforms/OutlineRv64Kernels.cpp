@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -252,6 +253,139 @@ static void emitArgumentUnpack(OpBuilder &builder, KernelRecord &record, func::F
     }
 }
 
+static func::FuncOp getOrCreateDeviceHelper(ModuleOp module, StringRef name, FunctionType type) {
+    if (auto helper = module.lookupSymbol<func::FuncOp>(name))
+        return helper;
+    OpBuilder declarationBuilder(module.getBodyRegion());
+    declarationBuilder.setInsertionPointToStart(module.getBody());
+    return declarationBuilder.create<func::FuncOp>(module.getLoc(), name, type);
+}
+
+static FailureOr<std::pair<uint64_t, uint64_t>> getLoadSizeAndAlignment(Type type) {
+    uint64_t bytes = 0;
+    if (auto integer = dyn_cast<IntegerType>(type)) {
+        if (integer.getWidth() == 0 || integer.getWidth() > 64)
+            return failure();
+        bytes = std::max<uint64_t>(1, llvm::divideCeil(integer.getWidth(), 8u));
+    } else if (auto floating = dyn_cast<FloatType>(type)) {
+        unsigned width = floating.getWidth();
+        if (width != 16 && width != 32 && width != 64)
+            return failure();
+        bytes = width / 8;
+    } else if (type.isIndex() || isa<LLVM::LLVMPointerType>(type)) {
+        bytes = 8;
+    } else {
+        return failure();
+    }
+    return std::make_pair(bytes, std::min<uint64_t>(llvm::PowerOf2Ceil(bytes), 8));
+}
+
+static FailureOr<Value> getArenaRelativeLoadAddress(OpBuilder &builder, Operation *operation, Value arena,
+                                                    uint64_t elementBytes) {
+    Location loc = operation->getLoc();
+    Value absoluteAddress;
+    if (auto load = dyn_cast<LLVM::LoadOp>(operation)) {
+        absoluteAddress = builder.create<LLVM::PtrToIntOp>(loc, builder.getI64Type(), load.getAddr());
+    } else if (auto load = dyn_cast<memref::LoadOp>(operation)) {
+        auto memrefType = dyn_cast<MemRefType>(load.getMemRefType());
+        SmallVector<int64_t> strides;
+        int64_t staticOffset = 0;
+        if (!memrefType || failed(memrefType.getStridesAndOffset(strides, staticOffset)) ||
+            ShapedType::isDynamic(staticOffset) || llvm::is_contained(strides, ShapedType::kDynamic) ||
+            strides.size() != load.getIndices().size()) {
+            operation->emitError("checked RV64 load requires a statically strided memref address");
+            return failure();
+        }
+        Value pointerIndex = builder.create<memref::ExtractAlignedPointerAsIndexOp>(loc, load.getMemref());
+        absoluteAddress = builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), pointerIndex);
+        int64_t staticByteOffset = staticOffset * static_cast<int64_t>(elementBytes);
+        if (staticByteOffset) {
+            Value offset = builder.create<arith::ConstantIntOp>(loc, staticByteOffset, 64);
+            absoluteAddress = builder.create<arith::AddIOp>(loc, absoluteAddress, offset);
+        }
+        for (auto [index, stride] : llvm::zip(load.getIndices(), strides)) {
+            Value index64 = builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), index);
+            Value byteStride =
+                builder.create<arith::ConstantIntOp>(loc, stride * static_cast<int64_t>(elementBytes), 64);
+            Value dynamicOffset = builder.create<arith::MulIOp>(loc, index64, byteStride);
+            absoluteAddress = builder.create<arith::AddIOp>(loc, absoluteAddress, dynamicOffset);
+        }
+    } else {
+        operation->emitError("checked RV64 load is not a supported load operation");
+        return failure();
+    }
+    return builder.create<arith::SubIOp>(loc, absoluteAddress, arena).getResult();
+}
+
+static Value convertCheckedLoadResult(OpBuilder &builder, Location loc, Value checked, Type resultType) {
+    if (resultType == builder.getI64Type())
+        return checked;
+    if (auto integer = dyn_cast<IntegerType>(resultType))
+        return builder.create<arith::TruncIOp>(loc, integer, checked);
+    if (auto floating = dyn_cast<FloatType>(resultType)) {
+        Type bitsType = builder.getIntegerType(floating.getWidth());
+        Value bits = floating.getWidth() == 64 ? checked : builder.create<arith::TruncIOp>(loc, bitsType, checked);
+        return builder.create<arith::BitcastOp>(loc, floating, bits);
+    }
+    if (resultType.isIndex())
+        return builder.create<arith::IndexCastOp>(loc, resultType, checked);
+    if (isa<LLVM::LLVMPointerType>(resultType))
+        return builder.create<LLVM::IntToPtrOp>(loc, resultType, checked);
+    llvm_unreachable("load type was validated before conversion");
+}
+
+static LogicalResult instrumentDeviceLoadsAndInstalls(ModuleOp module, func::FuncOp kernel) {
+    constexpr StringLiteral checkedLoadName = "cira_device_checked_load";
+    constexpr StringLiteral installName = "cira_device_install_cacheline";
+    SmallVector<Operation *> loads;
+    bool hasPreparedRoot = false;
+    kernel.walk([&](Operation *op) {
+        if (!isa<LLVM::LoadOp, memref::LoadOp>(op))
+            return;
+        loads.push_back(op);
+        hasPreparedRoot |= op->hasAttr("cira.prepared_root");
+    });
+    if (loads.empty())
+        return success();
+
+    {
+        OpBuilder declarationBuilder(module.getBodyRegion());
+        Type i64 = declarationBuilder.getI64Type();
+        Type i32 = declarationBuilder.getI32Type();
+        getOrCreateDeviceHelper(module, checkedLoadName, declarationBuilder.getFunctionType({i64, i32, i32}, {i64}));
+        if (hasPreparedRoot)
+            getOrCreateDeviceHelper(module, installName, declarationBuilder.getFunctionType({i64}, {}));
+    }
+
+    Value arena = kernel.getArgument(0);
+    for (Operation *load : loads) {
+        Value loadResult = load->getResult(0);
+        FailureOr<std::pair<uint64_t, uint64_t>> layout = getLoadSizeAndAlignment(loadResult.getType());
+        if (failed(layout))
+            return load->emitError("checked RV64 load has unsupported result type ") << loadResult.getType();
+
+        OpBuilder builder(load);
+        Location loc = load->getLoc();
+        FailureOr<Value> arenaOffset = getArenaRelativeLoadAddress(builder, load, arena, layout->first);
+        if (failed(arenaOffset))
+            return failure();
+        Value bytes = builder.create<arith::ConstantIntOp>(loc, layout->first, 32);
+        Value alignment = builder.create<arith::ConstantIntOp>(loc, layout->second, 32);
+        auto checkedCall = builder.create<func::CallOp>(loc, checkedLoadName, TypeRange{builder.getI64Type()},
+                                                        ValueRange{*arenaOffset, bytes, alignment});
+        Value replacement = convertCheckedLoadResult(builder, loc, checkedCall.getResult(0), loadResult.getType());
+
+        if (load->hasAttr("cira.prepared_root")) {
+            Value lineMask = builder.create<arith::ConstantIntOp>(loc, -64, 64);
+            Value lineOffset = builder.create<arith::AndIOp>(loc, *arenaOffset, lineMask);
+            builder.create<func::CallOp>(loc, installName, TypeRange{}, ValueRange{lineOffset});
+        }
+        loadResult.replaceAllUsesWith(replacement);
+        load->erase();
+    }
+    return success();
+}
+
 static func::FuncOp outlineKernel(ModuleOp module, KernelRecord &record) {
     MLIRContext *context = module.getContext();
     OpBuilder moduleBuilder(module.getBodyRegion());
@@ -275,6 +409,8 @@ static func::FuncOp outlineKernel(ModuleOp module, KernelRecord &record) {
         if (!isa<YieldOp>(op))
             bodyBuilder.clone(op, mapping);
     bodyBuilder.create<func::ReturnOp>(record.region.getLoc());
+    if (failed(instrumentDeviceLoadsAndInstalls(module, kernel)))
+        return {};
     return kernel;
 }
 
@@ -396,7 +532,10 @@ public:
             record.region->setAttr("cira.args_size",
                                    IntegerAttr::get(IntegerType::get(&getContext(), 64), record.argsSize));
             record.region->setAttr("cira.arg_layout", layout);
-            outlineKernel(module, record);
+            if (!outlineKernel(module, record)) {
+                signalPassFailure();
+                return;
+            }
         }
         if (failed(writeManifest(manifest, records, module)))
             signalPassFailure();

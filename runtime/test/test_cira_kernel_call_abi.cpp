@@ -11,6 +11,8 @@ static_assert(sizeof(cira_cxl_call_job_t) == sizeof(cira_cxl_call_job_v1_t));
 static_assert(offsetof(cira_cxl_call_job_v2_t, kernel_id) == 0);
 static_assert(offsetof(cira_cxl_call_job_v2_t, args_offset) == 8);
 static_assert(offsetof(cira_cxl_call_job_v2_t, completion_offset) == 16);
+static_assert(sizeof(cira_cxl_completion_t) == CIRA_CXL_CACHELINE_SIZE);
+static_assert(offsetof(cira_cxl_completion_t, seq) == 32);
 static_assert(sizeof(cira_cxl_call_job_v2_t) == 40);
 
 int main() {

@@ -21,6 +21,27 @@ cira_add_runtime_test(test_cira_cache_completion_path test_cira_cache_completion
 cira_add_runtime_test(test_cira_kernel_call_abi test_cira_kernel_call_abi.cpp)
 cira_add_runtime_test(test_cira_shared_arena test_cira_shared_arena.cpp)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(
+    NAME test_rv64_dispatch_table
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_rv64_dispatch_table.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../device/gen_dispatch_table.py
+)
+
+find_program(RISCV64_GCC riscv64-linux-gnu-gcc REQUIRED)
+find_program(RISCV64_READELF riscv64-linux-gnu-readelf REQUIRED)
+find_program(RISCV64_NM riscv64-linux-gnu-nm REQUIRED)
+find_program(RISCV64_OBJDUMP riscv64-linux-gnu-objdump REQUIRED)
+add_test(
+    NAME test_rv64_device_elf
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_rv64_device_elf.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../device
+            ${CMAKE_CURRENT_BINARY_DIR}/rv64-device
+            ${RISCV64_GCC} ${RISCV64_READELF} ${RISCV64_NM} ${RISCV64_OBJDUMP}
+)
+
 # Offload engine / two-pass profiling.
 cira_add_runtime_test(test_offload_engine test_offload_engine.cpp)
 cira_add_runtime_test(test_twopass_runtime test_twopass_runtime.cpp)
