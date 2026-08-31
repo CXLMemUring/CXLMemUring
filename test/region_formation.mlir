@@ -1,4 +1,5 @@
 // RUN: cira %s --cira-region-formation="require-profitable=false" | FileCheck %s
+// RUN: cira %s --cira-region-formation="require-profitable=false" --convert-cira-to-llvm-hetero | FileCheck %s --check-prefix=HETERO
 
 // Indirect (gather) access: the load of the index feeds the address of the
 // remote data load, so the backward slice must capture it.
@@ -48,3 +49,10 @@ func.func @chase(%idx: memref<?xi64, 1>, %data: memref<?xf32, 1>, %i: index) -> 
   return %v : f32
 }
 
+// The extracted device kernels must carry the offload region live-ins.  A
+// zero-argument kernel leaves cloned loads referring to unmapped block
+// arguments and cannot be compiled or dispatched.
+// HETERO: llvm.call @cira_get_device_func_addr
+// HETERO-NOT: cira.offload
+// HETERO: func.func @__vortex_kernel_0(
+// HETERO-SAME: memref<
