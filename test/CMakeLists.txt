@@ -39,6 +39,10 @@ if(FILECHECK_EXECUTABLE)
     NAME region_formation_profitable
     COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_formation.mlir --cira-region-formation | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_formation.mlir --check-prefix=PGO"
   )
+  add_test(
+    NAME region_merge_schedule
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_merge_schedule.mlir --cira-region-formation='require-profitable=false' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_merge_schedule.mlir"
+  )
 endif()
 
 # Per-MLIR tests for finer-grained reporting

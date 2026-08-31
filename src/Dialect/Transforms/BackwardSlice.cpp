@@ -649,6 +649,28 @@ void mlir::cira::pruneUnsupported(BackwardSliceResult &slice) {
     }
 }
 
+SetVector<Value> mlir::cira::computeSliceLiveIns(ArrayRef<Operation *> ops, ArrayRef<Operation *> roots) {
+    SetVector<Value> liveIns;
+    DenseSet<Operation *> internal(ops.begin(), ops.end());
+    internal.insert(roots.begin(), roots.end());
+
+    auto addExternalOperands = [&](ValueRange values) {
+        for (Value operand : values) {
+            Operation *def = operand.getDefiningOp();
+            if (def && internal.contains(def))
+                continue;
+            if (matchPattern(operand, m_Constant()))
+                continue;
+            liveIns.insert(operand);
+        }
+    };
+    for (Operation *op : ops)
+        addExternalOperands(op->getOperands());
+    for (Operation *root : roots)
+        addExternalOperands(getAddressOperands(root));
+    return liveIns;
+}
+
 bool mlir::cira::isDeviceLegal(const BackwardSliceResult &slice) {
     if (slice.ops.empty())
         return false;

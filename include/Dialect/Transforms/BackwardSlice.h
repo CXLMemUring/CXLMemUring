@@ -117,6 +117,11 @@ BackwardSliceResult computeBackwardSlice(Operation *m, const SliceOptions &optio
 /// Iterates to a fixed point because pruning can orphan further operations.
 void pruneUnsupported(BackwardSliceResult &slice);
 
+/// Recompute the external values consumed by a merged set of slice operations
+/// and read-only roots. Values defined by another merged operation/root and
+/// constants are not live-ins.
+SetVector<Value> computeSliceLiveIns(ArrayRef<Operation *> ops, ArrayRef<Operation *> roots);
+
 /// A slice is device-legal when it is non-empty and every remaining operation
 /// can run on the device.
 bool isDeviceLegal(const BackwardSliceResult &slice);
