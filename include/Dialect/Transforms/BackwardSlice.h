@@ -73,11 +73,21 @@ struct BackwardSliceResult {
 // Operation classification
 //===----------------------------------------------------------------------===//
 
+enum class RemoteProvenance {
+    Local,
+    Remote,
+    Unknown,
+};
+
+/// Classify a pointer-like value from explicit type/attribute provenance and
+/// pure pointer derivations. Unannotated host pointers remain Unknown.
+RemoteProvenance getRemoteProvenance(Value value);
+
 /// True if `op` reads or writes data that lives in CXL-attached memory: a
 /// `cira` operation on a `!cira.handle`, a memref/LLVM access through a
 /// non-default (remote) address space, or an op explicitly tagged
 /// `cira.remote`.
-bool isRemoteMemoryAccess(Operation *op);
+bool isRemoteMemoryAccess(Operation *op, bool allowLegacyHeapRemote = false);
 
 /// The operands of `op` that participate in address computation. Empty when
 /// `op` is not a memory operation.

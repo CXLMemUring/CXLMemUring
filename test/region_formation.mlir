@@ -29,6 +29,8 @@ func.func @direct(%data: memref<?xf32, 1>, %n: index) -> f32 {
   return %v : f32
 }
 
+// CHECK-LABEL: func.func @chase
+
 // RUN: cira %s --cira-region-formation | FileCheck %s --check-prefix=PGO
 // A three-deep chase clears the cost model's MIN_CHAIN_DEPTH, and the constant
 // offset is rematerialized inside the region instead of being passed in.
@@ -47,4 +49,3 @@ func.func @chase(%idx: memref<?xi64, 1>, %data: memref<?xf32, 1>, %i: index) -> 
   %v = memref.load %data[%off] : memref<?xf32, 1>
   return %v : f32
 }
-

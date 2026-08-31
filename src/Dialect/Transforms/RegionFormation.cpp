@@ -70,7 +70,7 @@ public:
                     return;
                 if (!getAddressOperands(op).empty())
                     ++numMemOps;
-                if (isRemoteMemoryAccess(op))
+                if (isRemoteMemoryAccess(op, allowLegacyHeapRemote))
                     roots.push_back(op);
             });
             numRoots += roots.size();

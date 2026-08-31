@@ -36,7 +36,10 @@ def CiraRegionFormation : Pass<"cira-region-formation", "::mlir::ModuleOp"> {
            "Follow dependent loads (pointer chasing) while slicing">,
     Option<"requireProfitable", "require-profitable", "bool",
            /*default=*/"true",
-           "Only form regions whose dependence chain clears the cost model">
+           "Only form regions whose dependence chain clears the cost model">,
+    Option<"allowLegacyHeapRemote", "allow-legacy-heap-remote", "bool",
+           /*default=*/"false",
+           "Treat non-stack CIR pointers as remote for legacy compatibility">
   ];
   let dependentDialects = ["::mlir::cira::RemoteMemDialect"];
 }

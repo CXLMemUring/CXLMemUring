@@ -15,6 +15,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -66,12 +67,178 @@ static bool isRemoteAddressSpace(Type type) {
     }
     if (auto ptr = dyn_cast<LLVM::LLVMPointerType>(type))
         return ptr.getAddressSpace() != 0;
+    if (auto ptr = dyn_cast<::cir::PointerType>(type))
+        return ptr.getAddrSpace() != ::cir::AddressSpace::Default;
     return false;
 }
 
 static bool isRemoteHandleType(Type type) { return isa<HandleType>(type) || isa<RemoteMemRefType>(type); }
 
-bool mlir::cira::isRemoteMemoryAccess(Operation *op) {
+static bool isProvenanceCarrier(Type type) {
+    return isa<MemRefType, LLVM::LLVMPointerType, ::cir::PointerType, HandleType, RemoteMemRefType>(type);
+}
+
+namespace {
+
+class ProvenanceClassifier {
+public:
+    RemoteProvenance classify(Value value) {
+        if (!value)
+            return RemoteProvenance::Unknown;
+        if (auto known = cache.find(value); known != cache.end())
+            return known->second;
+        if (!visiting.insert(value).second)
+            return RemoteProvenance::Unknown;
+        RemoteProvenance result = classifyImpl(value);
+        visiting.erase(value);
+        cache[value] = result;
+        return result;
+    }
+
+private:
+    static bool hasValueAttr(Value value, StringRef name) {
+        if (Operation *def = value.getDefiningOp())
+            return def->hasAttr(name);
+        auto arg = dyn_cast<BlockArgument>(value);
+        if (!arg)
+            return false;
+        if (auto function = dyn_cast_or_null<FunctionOpInterface>(arg.getOwner()->getParentOp())) {
+            Region &body = function.getFunctionBody();
+            if (!body.empty() && arg.getOwner() == &body.front())
+                return function.getArgAttr(arg.getArgNumber(), name) != nullptr;
+        }
+        return false;
+    }
+
+    static bool isCall(Operation *op) {
+        return isa<func::CallOp, func::CallIndirectOp, LLVM::CallOp, ::cir::CallOp>(op);
+    }
+
+    RemoteProvenance joinPointerOperands(Operation *op) {
+        bool sawCarrier = false;
+        RemoteProvenance joined = RemoteProvenance::Unknown;
+        for (Value operand : op->getOperands()) {
+            if (!isProvenanceCarrier(operand.getType()))
+                continue;
+            RemoteProvenance fact = classify(operand);
+            if (!sawCarrier) {
+                joined = fact;
+                sawCarrier = true;
+            } else if (joined != fact) {
+                return RemoteProvenance::Unknown;
+            }
+        }
+        return sawCarrier ? joined : RemoteProvenance::Unknown;
+    }
+
+    bool isSelfDerived(Value value, BlockArgument loopArgument, DenseSet<Value> &seen) {
+        if (value == loopArgument)
+            return true;
+        if (!seen.insert(value).second)
+            return true;
+        Operation *def = value.getDefiningOp();
+        if (!def || isCall(def) || !isMemoryEffectFree(def))
+            return false;
+        bool sawCarrier = false;
+        for (Value operand : def->getOperands()) {
+            if (!isProvenanceCarrier(operand.getType()))
+                continue;
+            sawCarrier = true;
+            if (!isSelfDerived(operand, loopArgument, seen))
+                return false;
+        }
+        return sawCarrier;
+    }
+
+    RemoteProvenance classifyBlockArgument(BlockArgument arg) {
+        Operation *owner = arg.getOwner()->getParentOp();
+        if (auto forOp = dyn_cast_or_null<scf::ForOp>(owner)) {
+            if (arg == forOp.getInductionVar())
+                return RemoteProvenance::Local;
+            if (auto init = forOp.getTiedLoopInit(arg)) {
+                RemoteProvenance initial = classify(init->get());
+                if (auto yielded = forOp.getTiedLoopYieldedValue(arg)) {
+                    Value yieldedValue = yielded->get();
+                    DenseSet<Value> seen;
+                    if (!isSelfDerived(yieldedValue, arg, seen)) {
+                        RemoteProvenance backedge = classify(yieldedValue);
+                        if (backedge == RemoteProvenance::Unknown || backedge != initial)
+                            return RemoteProvenance::Unknown;
+                    }
+                }
+                return initial;
+            }
+        }
+
+        if (auto whileOp = dyn_cast_or_null<scf::WhileOp>(owner)) {
+            unsigned index = arg.getArgNumber();
+            if (arg.getOwner() == whileOp.getBeforeBody() && index < whileOp.getInits().size())
+                return classify(whileOp.getInits()[index]);
+            auto condition = whileOp.getConditionOp();
+            if (index < condition.getArgs().size())
+                return classify(condition.getArgs()[index]);
+        }
+
+        bool sawPredecessor = false;
+        RemoteProvenance joined = RemoteProvenance::Unknown;
+        for (Block *predecessor : arg.getOwner()->getPredecessors()) {
+            Operation *terminator = predecessor->getTerminator();
+            auto branch = dyn_cast<BranchOpInterface>(terminator);
+            if (!branch)
+                return RemoteProvenance::Unknown;
+            for (unsigned successorIndex = 0; successorIndex < terminator->getNumSuccessors(); ++successorIndex) {
+                if (terminator->getSuccessor(successorIndex) != arg.getOwner())
+                    continue;
+                SuccessorOperands operands = branch.getSuccessorOperands(successorIndex);
+                if (arg.getArgNumber() >= operands.size() || operands.isOperandProduced(arg.getArgNumber()))
+                    return RemoteProvenance::Unknown;
+                RemoteProvenance incoming = classify(operands[arg.getArgNumber()]);
+                if (!sawPredecessor) {
+                    joined = incoming;
+                    sawPredecessor = true;
+                } else if (joined != incoming) {
+                    return RemoteProvenance::Unknown;
+                }
+            }
+        }
+        if (sawPredecessor)
+            return joined;
+        return RemoteProvenance::Unknown;
+    }
+
+    RemoteProvenance classifyImpl(Value value) {
+        if (hasValueAttr(value, "cira.local"))
+            return RemoteProvenance::Local;
+        if (hasValueAttr(value, "cira.remote"))
+            return RemoteProvenance::Remote;
+        if (isRemoteHandleType(value.getType()) || isRemoteAddressSpace(value.getType()))
+            return RemoteProvenance::Remote;
+
+        if (auto arg = dyn_cast<BlockArgument>(value))
+            return classifyBlockArgument(arg);
+
+        Operation *def = value.getDefiningOp();
+        if (!def)
+            return RemoteProvenance::Unknown;
+        if (isa<memref::AllocOp, memref::AllocaOp, LLVM::AllocaOp, ::cir::AllocaOp>(def))
+            return RemoteProvenance::Local;
+        if (isCall(def))
+            return def->hasAttr("cira.remote_result") ? RemoteProvenance::Remote : RemoteProvenance::Unknown;
+
+        if (isMemoryRead(def) || isMemoryEffectFree(def))
+            return joinPointerOperands(def);
+        return RemoteProvenance::Unknown;
+    }
+
+    DenseMap<Value, RemoteProvenance> cache;
+    DenseSet<Value> visiting;
+};
+
+} // namespace
+
+RemoteProvenance mlir::cira::getRemoteProvenance(Value value) { return ProvenanceClassifier().classify(value); }
+
+bool mlir::cira::isRemoteMemoryAccess(Operation *op, bool allowLegacyHeapRemote) {
     if (!op)
         return false;
 
@@ -86,17 +253,16 @@ bool mlir::cira::isRemoteMemoryAccess(Operation *op) {
         if (isRemoteHandleType(operand.getType()))
             return isMemoryRead(op) || !isMemoryEffectFree(op);
 
-    if (isa<memref::LoadOp, memref::StoreOp, LLVM::LoadOp, LLVM::StoreOp, affine::AffineLoadOp, affine::AffineStoreOp>(
-            op)) {
-        for (Value operand : op->getOperands())
-            if (isRemoteAddressSpace(operand.getType()))
-                return true;
-    }
+    for (Value address : getAddressOperands(op))
+        if (isProvenanceCarrier(address.getType()) && getRemoteProvenance(address) == RemoteProvenance::Remote)
+            return true;
 
-    if (auto load = dyn_cast<::cir::LoadOp>(op))
-        return !isCirStackSlot(load.getAddr());
-    if (auto store = dyn_cast<::cir::StoreOp>(op))
-        return !isCirStackSlot(store.getAddr());
+    if (allowLegacyHeapRemote) {
+        if (auto load = dyn_cast<::cir::LoadOp>(op))
+            return !isCirStackSlot(load.getAddr());
+        if (auto store = dyn_cast<::cir::StoreOp>(op))
+            return !isCirStackSlot(store.getAddr());
+    }
     return false;
 }
 

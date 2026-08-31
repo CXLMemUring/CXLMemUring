@@ -12,7 +12,8 @@ add_test(
 set_tests_properties(CXLMemUring_RunAll PROPERTIES TIMEOUT 240)
 
 # Optional: add FileCheck-specific tests if available
-find_program(FILECHECK_EXECUTABLE FileCheck)
+find_program(FILECHECK_EXECUTABLE FileCheck
+  HINTS /usr/local/firtool-1.62.0/bin)
 if(FILECHECK_EXECUTABLE)
   add_test(
     NAME CXLMemUring_Check_RemoteExtract
@@ -21,6 +22,22 @@ if(FILECHECK_EXECUTABLE)
   add_test(
     NAME CXLMemUring_Check_CiraAttrs
     COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/mlir/check_cira_attrs.mlir --convert-target-to-remote | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/mlir/check_cira_attrs.mlir"
+  )
+  add_test(
+    NAME region_provenance
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_provenance.mlir --cira-region-formation='require-profitable=false' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_provenance.mlir"
+  )
+  add_test(
+    NAME region_provenance_legacy
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_provenance.mlir --cira-region-formation='require-profitable=false allow-legacy-heap-remote=true' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_provenance.mlir --check-prefix=LEGACY"
+  )
+  add_test(
+    NAME region_formation
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_formation.mlir --cira-region-formation='require-profitable=false' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_formation.mlir"
+  )
+  add_test(
+    NAME region_formation_profitable
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_formation.mlir --cira-region-formation | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_formation.mlir --check-prefix=PGO"
   )
 endif()
 
