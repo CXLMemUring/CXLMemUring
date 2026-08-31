@@ -220,6 +220,16 @@ public:
 
 // C API for FFI
 extern "C" {
+    typedef enum cira_kernel_submit_status {
+        CIRA_KERNEL_SUBMIT_OK = 0,
+        CIRA_KERNEL_SUBMIT_EINVAL = -1,
+        CIRA_KERNEL_SUBMIT_ENOARENA = -2,
+        CIRA_KERNEL_SUBMIT_ENOMMIO = -3,
+        CIRA_KERNEL_SUBMIT_ECONVERT = -4,
+        CIRA_KERNEL_SUBMIT_ENOMEM = -5,
+        CIRA_KERNEL_SUBMIT_ESUBMIT = -6,
+    } cira_kernel_submit_status_t;
+
     void* cira_runtime_create();
     void cira_runtime_destroy(void* runtime);
     void* cira_offload_load_edge(void* engine, void* edge_ptr,
@@ -340,6 +350,24 @@ extern "C" {
     // completion_ptr: DCOH completion address
     void cira_offload_submit(void* func_ptr, void** operands,
                              int num_operands, void* completion_ptr);
+
+    // Convert a compiler-proven remote pointer into a shared-arena offset.
+    // UINT64_MAX records a fail-closed conversion error consumed by the next
+    // cira_offload_submit_kernel call on the same thread.
+    uint64_t cira_offload_arg_offset(const void* ptr, uint64_t bytes);
+
+    // Submit an ABI-v2 kernel ID and a compiler-packed argument structure.
+    // The payload is copied into the shared arena before the v2 doorbell is
+    // committed; completion must also reside in that arena.
+    int cira_offload_submit_kernel(uint64_t kernel_id,
+                                   const void* typed_args,
+                                   uint32_t args_size, void* completion,
+                                   uint32_t flags);
+
+    // Fail the current query if submission or device completion was not
+    // successful. The compiler emits this after cira_future_await().
+    void cira_offload_require_success(int submit_status,
+                                      const void* completion);
 
     // Get device function address by name (for function pointer resolution)
     void* cira_get_device_func_addr(void);

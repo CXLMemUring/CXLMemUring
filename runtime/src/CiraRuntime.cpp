@@ -2,6 +2,7 @@
 #include "cira_cxl_job.h"
 #include "cira_mmio.h"
 #include "cira_mwait.h"
+#include "cira_shared_arena.h"
 #include "vortex_device.h"
 #include <algorithm>
 #include <atomic>
@@ -51,6 +52,8 @@ struct MmioCompletionSubmission {
     cira_mmio_window_t *window;
     uint64_t seq;
     uintptr_t region_virtual_base;
+    uint32_t version;
+    uint32_t job_id;
 };
 
 std::mutex g_mmio_completion_mutex;
@@ -269,11 +272,11 @@ void release_completion_hpa_reservation(uintptr_t region_virtual_base) {
 }
 
 void track_mmio_completion_submission(void *completion, cira_mmio_window_t *window, uint64_t seq,
-                                      uintptr_t region_virtual_base) {
-    if (!completion || !window || seq == 0 || region_virtual_base == 0)
+                                      uintptr_t region_virtual_base, uint32_t version, uint32_t job_id) {
+    if (!completion || !window || seq == 0)
         return;
     std::lock_guard<std::mutex> lock(g_mmio_completion_mutex);
-    g_mmio_completions[completion] = {window, seq, region_virtual_base};
+    g_mmio_completions[completion] = {window, seq, region_virtual_base, version, job_id};
 }
 
 bool lookup_mmio_completion_submission(void *completion, MmioCompletionSubmission *submission) {
@@ -324,14 +327,13 @@ void harvest_mmio_completion_status(cira_mmio_window_t *window) {
 
     for (const auto &entry : submissions) {
         cira_cxl_host_status_t status = {};
-        if (cira_mmio_read_host_status(window, &status) == CIRA_MMIO_OK &&
-            status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
-            status.job_id == CIRA_CXL_JOB_CALL && status.seq == entry.second.seq &&
-            status.status != CIRA_CXL_STATUS_SUCCESS) {
+        if (cira_mmio_read_host_status(window, &status) == CIRA_MMIO_OK && status.magic == CIRA_CXL_JOB_MAGIC &&
+            status.version == entry.second.version && status.job_id == entry.second.job_id &&
+            status.seq == entry.second.seq && status.status != CIRA_CXL_STATUS_SUCCESS) {
             cira_mmio_signal_completion(entry.first, status.status, 0);
             untrack_mmio_completion_submission(entry.first);
-        } else if (status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
-                   status.job_id == CIRA_CXL_JOB_CALL && status.seq == entry.second.seq &&
+        } else if (status.magic == CIRA_CXL_JOB_MAGIC && status.version == entry.second.version &&
+                   status.job_id == entry.second.job_id && status.seq == entry.second.seq &&
                    status.status == CIRA_CXL_STATUS_SUCCESS && completion_is_terminal(entry.first)) {
             // Magic is only a candidate completion: the commit W may become
             // visible before its B response.  Release the request only after
@@ -392,15 +394,15 @@ int wait_for_completion_terminal(void *completion, uint64_t timeout_ns) {
 
         cira_cxl_host_status_t status = {};
         if (cira_mmio_read_host_status(submission.window, &status) == CIRA_MMIO_OK &&
-            status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
-            status.job_id == CIRA_CXL_JOB_CALL && status.seq == submission.seq &&
+            status.magic == CIRA_CXL_JOB_MAGIC && status.version == submission.version &&
+            status.job_id == submission.job_id && status.seq == submission.seq &&
             status.status != CIRA_CXL_STATUS_SUCCESS) {
             cira_mmio_signal_completion(completion, status.status, 0);
             untrack_mmio_completion_submission(completion);
             return CIRA_MMIO_EIO;
         }
-        if (status.magic == CIRA_CXL_JOB_MAGIC && status.version == CIRA_CXL_JOB_VERSION &&
-            status.job_id == CIRA_CXL_JOB_CALL && status.seq == submission.seq &&
+        if (status.magic == CIRA_CXL_JOB_MAGIC && status.version == submission.version &&
+            status.job_id == submission.job_id && status.seq == submission.seq &&
             status.status == CIRA_CXL_STATUS_SUCCESS && magic_visible) {
             // The dispatcher has observed OKAY for the magic transaction and
             // the cache-resident payload is visible to this CPU.
@@ -1333,6 +1335,7 @@ struct LlcTileMetadata {
 
 std::mutex g_llc_tile_mutex;
 std::unordered_map<void *, LlcTileMetadata> g_llc_tiles;
+thread_local int g_kernel_arg_conversion_status = CIRA_KERNEL_SUBMIT_OK;
 
 size_t align_up_cacheline(uint64_t size) {
     uint64_t requested = size ? size : CIRA_CACHELINE_BYTES;
@@ -1430,7 +1433,8 @@ bool submit_mmio_call(void *func_ptr, void **operands, int num_operands, void *c
     }
 
     if (hardware_completion)
-        track_mmio_completion_submission(completion_ptr, window, seq, reservation.region_virtual_base);
+        track_mmio_completion_submission(completion_ptr, window, seq, reservation.region_virtual_base,
+                                         CIRA_CXL_JOB_VERSION, CIRA_CXL_JOB_CALL);
 
     if (env_flag_enabled("CIRA_CXL_MMIO_WAIT") && completion_ptr) {
         (void)wait_for_completion_terminal(completion_ptr, cira_mmio_default_timeout_ns());
@@ -1904,6 +1908,19 @@ void *future_pool_entry(CiraFuturePool *pool, uint32_t index) {
 }
 
 void *cira_future_alloc(void) {
+    if (cira_shared_arena_t *arena = cira_shared_arena_default()) {
+        uint64_t offset = 0;
+        if (cira_shared_arena_alloc(arena, CIRA_CXL_CACHELINE_SIZE, CIRA_CXL_CACHELINE_SIZE, &offset) ==
+            CIRA_ARENA_OK) {
+            void *completion =
+                cira_shared_arena_from_offset(arena, offset, CIRA_CXL_CACHELINE_SIZE, CIRA_CXL_CACHELINE_SIZE);
+            if (completion) {
+                clear_completion(completion);
+                return completion;
+            }
+        }
+    }
+
     // Allocate 64-byte-aligned completion structure
     // Must be cache-line aligned for DCOH delivery and MONITOR/MWAIT
     void *ptr = nullptr;
@@ -2039,6 +2056,12 @@ void cira_future_free(void *completion_ptr) {
     untrack_active_future(completion_ptr);
     untrack_mmio_completion_submission(completion_ptr);
 
+    if (cira_shared_arena_t *arena = cira_shared_arena_default()) {
+        uint64_t offset = 0;
+        if (cira_shared_arena_to_offset(arena, completion_ptr, CIRA_CXL_CACHELINE_SIZE, &offset) == CIRA_ARENA_OK)
+            return;
+    }
+
     free(completion_ptr);
 }
 
@@ -2086,6 +2109,98 @@ void cira_offload_submit(void *func_ptr, void **operands, int num_operands, void
     }
 
     complete_in_software(completion_ptr, 0);
+}
+
+uint64_t cira_offload_arg_offset(const void *ptr, uint64_t bytes) {
+    cira_shared_arena_t *arena = cira_shared_arena_default();
+    if (!arena) {
+        g_kernel_arg_conversion_status = CIRA_KERNEL_SUBMIT_ENOARENA;
+        return UINT64_MAX;
+    }
+
+    uint64_t offset = 0;
+    if (cira_shared_arena_to_offset(arena, ptr, bytes ? bytes : 1, &offset) != CIRA_ARENA_OK) {
+        g_kernel_arg_conversion_status = CIRA_KERNEL_SUBMIT_ECONVERT;
+        return UINT64_MAX;
+    }
+    return offset;
+}
+
+int cira_offload_submit_kernel(uint64_t kernel_id, const void *typed_args, uint32_t args_size, void *completion,
+                               uint32_t flags) {
+    int conversion_status = g_kernel_arg_conversion_status;
+    g_kernel_arg_conversion_status = CIRA_KERNEL_SUBMIT_OK;
+    auto fail = [&](int status, uint32_t device_status, const char *message) {
+        if (env_flag_enabled("CIRA_CXL_MMIO_STRICT") || env_flag_enabled("CIRA_CXL_ARENA_STRICT"))
+            std::cerr << "cira_offload_submit_kernel: " << message << std::endl;
+        // Publish an explicit error, never the legacy path's fabricated
+        // success, so a compiler-placed wait cannot hang or hide the failure.
+        if (completion)
+            complete_in_software(completion, device_status);
+        return status;
+    };
+
+    if (!completion || kernel_id == 0 || (args_size && !typed_args))
+        return fail(CIRA_KERNEL_SUBMIT_EINVAL, CIRA_CXL_STATUS_BAD_ARGS, "invalid kernel submission arguments");
+
+    clear_completion(completion);
+    track_active_future(completion);
+
+    if (conversion_status != CIRA_KERNEL_SUBMIT_OK)
+        return fail(conversion_status, CIRA_CXL_STATUS_BAD_ARGS, "remote argument is outside the shared arena");
+
+    cira_shared_arena_t *arena = cira_shared_arena_default();
+    if (!arena)
+        return fail(CIRA_KERNEL_SUBMIT_ENOARENA, CIRA_CXL_STATUS_BAD_ARGS, "shared arena is unavailable");
+
+    cira_mmio_window_t *window = cira_mmio_default();
+    if (!window)
+        return fail(CIRA_KERNEL_SUBMIT_ENOMMIO, CIRA_CXL_STATUS_BAD_JOB, "MMIO window is unavailable");
+
+    std::unique_lock<std::mutex> submit_lock(g_hardware_completion_submit_mutex);
+    if (hardware_completion_channel_busy(window))
+        return fail(CIRA_KERNEL_SUBMIT_ESUBMIT, CIRA_CXL_STATUS_BAD_JOB, "completion channel is busy");
+
+    uint64_t completion_offset = 0;
+    if (cira_shared_arena_to_offset(arena, completion, CIRA_CXL_CACHELINE_SIZE, &completion_offset) != CIRA_ARENA_OK ||
+        (completion_offset & (CIRA_CXL_CACHELINE_SIZE - 1)))
+        return fail(CIRA_KERNEL_SUBMIT_ECONVERT, CIRA_CXL_STATUS_COMPLETION_IO,
+                    "completion is outside or misaligned in the shared arena");
+
+    uint64_t args_offset = 0;
+    if (cira_shared_arena_alloc(arena, args_size, 8, &args_offset) != CIRA_ARENA_OK)
+        return fail(CIRA_KERNEL_SUBMIT_ENOMEM, CIRA_CXL_STATUS_BAD_ARGS, "shared arena has no argument-block space");
+    void *arena_args = cira_shared_arena_from_offset(arena, args_offset, args_size, 8);
+    if (!arena_args)
+        return fail(CIRA_KERNEL_SUBMIT_ECONVERT, CIRA_CXL_STATUS_BAD_ARGS,
+                    "allocated argument offset does not resolve");
+    if (args_size)
+        std::memcpy(arena_args, typed_args, args_size);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+
+    uint64_t sequence = 0;
+    int rc = cira_mmio_submit_kernel(window, kernel_id, args_offset, args_size, completion_offset, flags, &sequence);
+    if (rc != CIRA_MMIO_OK)
+        return fail(CIRA_KERNEL_SUBMIT_ESUBMIT, CIRA_CXL_STATUS_BAD_JOB, "v2 MMIO submission failed");
+
+    track_mmio_completion_submission(completion, window, sequence, 0, CIRA_CXL_JOB_VERSION_KERNEL_ID,
+                                     CIRA_CXL_JOB_CALL_V2);
+    return CIRA_KERNEL_SUBMIT_OK;
+}
+
+void cira_offload_require_success(int submit_status, const void *completion) {
+    const auto *line = static_cast<const cira_cxl_completion_t *>(completion);
+    uint32_t magic = line ? __atomic_load_n(&line->magic, __ATOMIC_ACQUIRE) : 0;
+    uint32_t completion_status =
+        line ? __atomic_load_n(&line->status, __ATOMIC_RELAXED) : CIRA_CXL_STATUS_COMPLETION_IO;
+    if (submit_status == CIRA_KERNEL_SUBMIT_OK && magic == CIRA_CXL_COMPLETION_MAGIC &&
+        completion_status == CIRA_CXL_STATUS_SUCCESS)
+        return;
+
+    std::cerr << "cira_offload_require_success: kernel offload failed"
+              << " (submit_status=" << submit_status << ", completion_magic=0x" << std::hex << magic << std::dec
+              << ", completion_status=" << completion_status << ")" << std::endl;
+    std::abort();
 }
 
 void *cira_get_device_func_addr(void) {

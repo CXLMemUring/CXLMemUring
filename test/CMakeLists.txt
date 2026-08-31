@@ -47,6 +47,14 @@ if(FILECHECK_EXECUTABLE)
     NAME outline_rv64
     COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/outline_rv64_kernels.mlir --cira-outline-rv64-kernels='manifest=${CMAKE_BINARY_DIR}/test_ctest_out/outline-rv64.json module-id=monetdb' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/outline_rv64_kernels.mlir"
   )
+  add_test(
+    NAME hetero_kernel_submit
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/hetero_kernel_submit.mlir --convert-cira-to-llvm-hetero | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/hetero_kernel_submit.mlir"
+  )
+  add_test(
+    NAME hetero_kernel_submit_bad_layout
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/hetero_kernel_submit_bad_layout.mlir --convert-cira-to-llvm-hetero >${CMAKE_BINARY_DIR}/test_ctest_out/hetero-bad-layout.out 2>${CMAKE_BINARY_DIR}/test_ctest_out/hetero-bad-layout.err; status=\$?; test \$status -ne 0 && grep -q 'cira.arg_layout field is not naturally aligned' ${CMAKE_BINARY_DIR}/test_ctest_out/hetero-bad-layout.err"
+  )
 endif()
 
 add_test(

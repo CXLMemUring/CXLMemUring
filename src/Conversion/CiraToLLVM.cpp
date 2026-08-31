@@ -2,6 +2,7 @@
 #include "Dialect/CiraOps.h"
 #include "Dialect/RemoteMem.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -12,10 +13,15 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/TargetParser/Triple.h"
 // Allow marking CIR dialect ops as legal when running CIRA-only lowering
 #include <clang/CIR/Dialect/IR/CIRDialect.h>
+
+#include <algorithm>
+#include <limits>
 
 using namespace mlir;
 using namespace mlir::cira;
@@ -62,6 +68,68 @@ TargetArchitecture getTargetArchitecture(ModuleOp module) {
 
     // Default to heterogeneous for CXLMemUring
     return TargetArchitecture::Heterogeneous;
+}
+
+static std::optional<uint64_t> getPackedByteWidth(Type type) {
+    if (type.isIndex())
+        return 8;
+    if (auto integer = dyn_cast<IntegerType>(type))
+        return std::max<uint64_t>(1, llvm::divideCeil(integer.getWidth(), 8u));
+    if (auto floating = dyn_cast<FloatType>(type))
+        return std::max<uint64_t>(1, llvm::divideCeil(floating.getWidth(), 8u));
+    if (auto vector = dyn_cast<VectorType>(type)) {
+        std::optional<uint64_t> elementBytes = getPackedByteWidth(vector.getElementType());
+        if (elementBytes)
+            return vector.getNumElements() * *elementBytes;
+    }
+    return std::nullopt;
+}
+
+/// Return the minimum arena extent that contains every typed access reachable
+/// from a remote boundary argument. Device firmware still validates each final
+/// offset; this host-side check prevents even a direct multi-byte access from
+/// being admitted when only its first byte is inside the arena.
+static std::optional<uint64_t> getRemoteAccessBytes(BlockArgument argument, Type boundaryType) {
+    std::optional<uint64_t> accessBytes;
+    auto includeType = [&](Type type) {
+        if (std::optional<uint64_t> bytes = getPackedByteWidth(type))
+            accessBytes = std::max(accessBytes.value_or(0), *bytes);
+    };
+
+    if (auto memref = dyn_cast<MemRefType>(boundaryType))
+        includeType(memref.getElementType());
+    else if (auto handle = dyn_cast<HandleType>(boundaryType))
+        includeType(handle.getElementType());
+    else if (auto remote = dyn_cast<RemoteMemRefType>(boundaryType)) {
+        Type element = remote.getElementType();
+        if (auto memref = dyn_cast<MemRefType>(element))
+            element = memref.getElementType();
+        includeType(element);
+    }
+
+    SmallVector<Value> worklist{argument};
+    llvm::DenseSet<Value> visited;
+    while (!worklist.empty()) {
+        Value value = worklist.pop_back_val();
+        if (!visited.insert(value).second)
+            continue;
+        for (OpOperand &use : value.getUses()) {
+            Operation *owner = use.getOwner();
+            if (use.getOperandNumber() == 0 && isa<LLVM::LoadOp, memref::LoadOp>(owner)) {
+                includeType(owner->getResult(0).getType());
+                continue;
+            }
+
+            StringRef name = owner->getName().getStringRef();
+            bool pointerDerivation = use.getOperandNumber() == 0 &&
+                                     (name == "llvm.getelementptr" || name == "llvm.bitcast" ||
+                                      name == "llvm.addrspacecast" || name == "memref.cast" || name == "cir.cast" ||
+                                      name == "cir.ptr_stride" || name == "builtin.unrealized_conversion_cast");
+            if (pointerDerivation)
+                llvm::append_range(worklist, owner->getResults());
+        }
+    }
+    return accessBytes;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1082,6 +1150,157 @@ struct OffloadRegionOpLowering : public ConversionPattern {
         auto i64Type = IntegerType::get(ctx, 64);
 
         if (targetArch == TargetArchitecture::RISCV_VORTEX || targetArch == TargetArchitecture::Heterogeneous) {
+            if (auto kernelIdAttr = offloadOp->getAttrOfType<IntegerAttr>("cira.kernel_id")) {
+                auto argsSizeAttr = offloadOp->getAttrOfType<IntegerAttr>("cira.args_size");
+                auto layoutAttr = offloadOp->getAttrOfType<ArrayAttr>("cira.arg_layout");
+                if (!argsSizeAttr || !layoutAttr || layoutAttr.size() != operands.size())
+                    return offloadOp.emitError(
+                        "kernel-id offload requires matching cira.args_size and cira.arg_layout metadata");
+                Block &body = offloadOp.getBody().front();
+
+                Operation *waitPoint = op->getNextNode();
+                while (waitPoint && !isa<BarrierOp>(waitPoint))
+                    waitPoint = waitPoint->getNextNode();
+                if (!waitPoint)
+                    return offloadOp.emitError("kernel-id offload has no following cira.barrier wait point");
+
+                uint64_t argsSize = argsSizeAttr.getValue().getZExtValue();
+                if ((argsSize & 7) || argsSize > std::numeric_limits<uint32_t>::max())
+                    return offloadOp.emitError("kernel-id argument block must be 8-byte aligned and fit in u32");
+
+                auto i8Type = IntegerType::get(ctx, 8);
+                auto function = offloadOp->getParentOfType<func::FuncOp>();
+                if (!function || function.getBody().empty())
+                    return offloadOp.emitError("kernel-id offload must be nested in a defined function");
+                Value argsBuffer;
+                {
+                    OpBuilder::InsertionGuard guard(rewriter);
+                    rewriter.setInsertionPointToStart(&function.getBody().front());
+                    Value allocationSize = rewriter.create<LLVM::ConstantOp>(
+                        loc, i64Type, rewriter.getI64IntegerAttr(std::max<uint64_t>(argsSize, 1)));
+                    argsBuffer = rewriter.create<LLVM::AllocaOp>(loc, ptrType, i8Type, allocationSize);
+                }
+
+                // Make padding deterministic before writing each typed field.
+                Value zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Type, rewriter.getI64IntegerAttr(0));
+                for (uint64_t offset = 0; offset < argsSize; offset += 8) {
+                    Value byteOffset =
+                        rewriter.create<LLVM::ConstantOp>(loc, i64Type, rewriter.getI64IntegerAttr(offset));
+                    Value slot = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, argsBuffer, ValueRange{byteOffset});
+                    rewriter.create<LLVM::StoreOp>(loc, zero64, slot);
+                }
+
+                uint64_t previousEnd = 0;
+                for (auto [index, pair] : llvm::enumerate(llvm::zip(operands, layoutAttr))) {
+                    Value operand = std::get<0>(pair);
+                    Attribute entryAttr = std::get<1>(pair);
+                    Value originalOperand = offloadOp.getOperand(index);
+                    auto entry = dyn_cast<DictionaryAttr>(entryAttr);
+                    auto offsetAttr = entry ? entry.getAs<IntegerAttr>("offset") : IntegerAttr();
+                    auto typeAttr = entry ? entry.getAs<StringAttr>("type") : StringAttr();
+                    if (!offsetAttr || !typeAttr)
+                        return offloadOp.emitError("malformed cira.arg_layout entry");
+                    uint64_t offset = offsetAttr.getValue().getZExtValue();
+                    uint64_t packedBytes = 0;
+                    StringRef packedType = typeAttr.getValue();
+                    Type boundaryType = originalOperand.getType();
+                    if (packedType == "arena_offset") {
+                        if (!isa<MemRefType, HandleType, RemoteMemRefType, LLVM::LLVMPointerType>(boundaryType))
+                            return offloadOp.emitError("arena_offset layout does not describe a pointer operand");
+                        packedBytes = 8;
+                    } else if (packedType == "index") {
+                        if (!boundaryType.isIndex())
+                            return offloadOp.emitError("index layout does not describe an index operand");
+                        packedBytes = 8;
+                    } else if (auto integer = dyn_cast<IntegerType>(boundaryType)) {
+                        if (packedType != (Twine("i") + Twine(integer.getWidth())).str())
+                            return offloadOp.emitError("integer operand does not match its packed layout type");
+                        packedBytes = std::max<uint64_t>(1, llvm::divideCeil(integer.getWidth(), 8u));
+                    } else if (auto floating = dyn_cast<FloatType>(boundaryType)) {
+                        if (packedType != (Twine("f") + Twine(floating.getWidth())).str())
+                            return offloadOp.emitError("floating operand does not match its packed layout type");
+                        packedBytes = floating.getWidth() / 8;
+                    }
+                    if (packedBytes == 0 || offset < previousEnd || offset > argsSize ||
+                        packedBytes > argsSize - offset)
+                        return offloadOp.emitError("cira.arg_layout offset is outside the packed block");
+                    uint64_t naturalAlignment = std::min<uint64_t>(llvm::PowerOf2Ceil(packedBytes), 8);
+                    if (offset % naturalAlignment)
+                        return offloadOp.emitError("cira.arg_layout field is not naturally aligned");
+                    previousEnd = offset + packedBytes;
+
+                    Value byteOffset =
+                        rewriter.create<LLVM::ConstantOp>(loc, i64Type, rewriter.getI64IntegerAttr(offset));
+                    Value slot = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, argsBuffer, ValueRange{byteOffset});
+                    Value packedValue = operand;
+                    if (typeAttr.getValue() == "arena_offset") {
+                        Value pointer = operand;
+                        if (isa<MemRefType>(originalOperand.getType())) {
+                            pointer = MemRefDescriptor(operand).alignedPtr(rewriter, loc);
+                        } else if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
+                            return offloadOp.emitError("arena_offset argument did not lower to a pointer");
+                        }
+                        std::optional<uint64_t> accessBytes =
+                            getRemoteAccessBytes(body.getArgument(index), boundaryType);
+                        if (!accessBytes)
+                            return offloadOp.emitError("cannot determine the remote argument access width");
+                        Value extent =
+                            rewriter.create<LLVM::ConstantOp>(loc, i64Type, rewriter.getI64IntegerAttr(*accessBytes));
+                        auto offsetFunction = FlatSymbolRefAttr::get(ctx, "cira_offload_arg_offset");
+                        packedValue =
+                            rewriter.create<LLVM::CallOp>(loc, i64Type, offsetFunction, ValueRange{pointer, extent})
+                                .getResult();
+                    } else if (typeAttr.getValue() == "index" && operand.getType().isIndex()) {
+                        packedValue = rewriter.create<arith::IndexCastOp>(loc, i64Type, operand);
+                    } else if (!isa<IntegerType, FloatType>(operand.getType())) {
+                        return offloadOp.emitError("unsupported packed scalar type ") << operand.getType();
+                    }
+                    rewriter.create<LLVM::StoreOp>(loc, packedValue, slot);
+                }
+
+                auto completionAlloc = FlatSymbolRefAttr::get(ctx, "cira_future_alloc");
+                Value completion =
+                    rewriter.create<LLVM::CallOp>(loc, ptrType, completionAlloc, ValueRange{}).getResult();
+                Value kernelId =
+                    rewriter.create<LLVM::ConstantOp>(loc, i64Type, IntegerAttr::get(i64Type, kernelIdAttr.getValue()));
+                Value argsSize32 = rewriter.create<LLVM::ConstantOp>(
+                    loc, i32Type, rewriter.getI32IntegerAttr(static_cast<uint32_t>(argsSize)));
+                uint32_t flags = 0;
+                if (auto flagsAttr = offloadOp->getAttrOfType<IntegerAttr>("cira.flags"))
+                    flags = static_cast<uint32_t>(flagsAttr.getInt());
+                Value flagsValue = rewriter.create<LLVM::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(flags));
+                auto submitFunction = FlatSymbolRefAttr::get(ctx, "cira_offload_submit_kernel");
+                Value submitStatus =
+                    rewriter
+                        .create<LLVM::CallOp>(loc, i32Type, submitFunction,
+                                              ValueRange{kernelId, argsBuffer, argsSize32, completion, flagsValue})
+                        .getResult();
+
+                SmallVector<Value> results;
+                IRMapping mapping;
+                for (auto [arg, operand] : llvm::zip(body.getArguments(), offloadOp.getOperands()))
+                    mapping.map(arg, operand);
+                for (Operation &bodyOp : body.getOperations()) {
+                    if (auto yieldOp = dyn_cast<YieldOp>(bodyOp)) {
+                        for (Value value : yieldOp.getValues())
+                            results.push_back(mapping.lookupOrDefault(value));
+                    } else {
+                        rewriter.clone(bodyOp, mapping);
+                    }
+                }
+
+                rewriter.setInsertionPoint(waitPoint);
+                auto awaitFunction = FlatSymbolRefAttr::get(ctx, "cira_future_await");
+                rewriter.create<LLVM::CallOp>(loc, ptrType, awaitFunction, ValueRange{completion});
+                auto requireSuccessFunction = FlatSymbolRefAttr::get(ctx, "cira_offload_require_success");
+                rewriter.create<LLVM::CallOp>(loc, TypeRange{}, requireSuccessFunction,
+                                              ValueRange{submitStatus, completion});
+                auto freeFunction = FlatSymbolRefAttr::get(ctx, "cira_future_free");
+                rewriter.create<LLVM::CallOp>(loc, TypeRange{}, freeFunction, ValueRange{completion});
+                rewriter.replaceOp(op, results);
+                return success();
+            }
+
             // ---- Heterogeneous offload path ----
             // 1. Pack operands into MMIO task struct (matches Type2KernelRequest)
             // 2. Submit to ring buffer via BAR0 CSR writes
@@ -1407,12 +1626,48 @@ struct ConvertCiraToLLVMHeteroPass : public PassWrapper<ConvertCiraToLLVMHeteroP
         auto module = getOperation();
         auto *ctx = &getContext();
 
+        // Conversion patterns cannot make malformed metadata legal. Diagnose
+        // alignment before rewriting so the pass and command fail closed
+        // instead of printing an error while returning successful output.
+        bool invalidLayout = false;
+        module.walk([&](OffloadRegionOp offload) {
+            if (!offload->hasAttr("cira.kernel_id"))
+                return WalkResult::advance();
+            auto layout = offload->getAttrOfType<ArrayAttr>("cira.arg_layout");
+            if (!layout || layout.size() != offload.getNumOperands())
+                return WalkResult::advance();
+            for (auto [operand, entryAttr] : llvm::zip(offload.getOperands(), layout)) {
+                auto entry = dyn_cast<DictionaryAttr>(entryAttr);
+                auto offsetAttr = entry ? entry.getAs<IntegerAttr>("offset") : IntegerAttr();
+                auto typeAttr = entry ? entry.getAs<StringAttr>("type") : StringAttr();
+                if (!offsetAttr || !typeAttr)
+                    continue;
+                uint64_t width = 0;
+                if (typeAttr.getValue() == "arena_offset" || typeAttr.getValue() == "index")
+                    width = 8;
+                else if (std::optional<uint64_t> bytes = getPackedByteWidth(operand.getType()))
+                    width = *bytes;
+                if (width && offsetAttr.getValue().getZExtValue() % std::min<uint64_t>(llvm::PowerOf2Ceil(width), 8)) {
+                    offload.emitError("cira.arg_layout field is not naturally aligned");
+                    invalidLayout = true;
+                    return WalkResult::interrupt();
+                }
+            }
+            return WalkResult::advance();
+        });
+        if (invalidLayout) {
+            signalPassFailure();
+            return;
+        }
+
         // ---- Phase 1: Extract device kernels from cira.offload regions ----
         int kernelId = 0;
         SmallVector<OffloadRegionOp> offloadOps;
         module.walk([&](OffloadRegionOp op) { offloadOps.push_back(op); });
 
         for (auto offloadOp : offloadOps) {
+            if (offloadOp->hasAttr("cira.kernel_id"))
+                continue;
             // Generate device kernel function name
             std::string kernelName = "__vortex_kernel_" + std::to_string(kernelId++);
             if (auto regionName = offloadOp->getAttrOfType<StringAttr>("region_name"))
@@ -1452,7 +1707,7 @@ struct ConvertCiraToLLVMHeteroPass : public PassWrapper<ConvertCiraToLLVMHeteroP
 
         // ---- Phase 2: Mark host functions for x86 ----
         module.walk([&](func::FuncOp func) {
-            if (!func->hasAttr("vortex.kernel")) {
+            if (!func->hasAttr("vortex.kernel") && !func->hasAttr("cira.rv64_kernel")) {
                 func->setAttr("target-cpu", StringAttr::get(ctx, "x86-64"));
                 func->setAttr("target-features", StringAttr::get(ctx, "+sse4.2,+avx2,+avx512f"));
             }

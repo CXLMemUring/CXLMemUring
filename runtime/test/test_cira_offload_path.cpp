@@ -7,15 +7,20 @@
 // helper thread plays the role of the device firmware: it polls the doorbell,
 // executes the call job, and publishes the completion line the host awaits.
 
+#include "CiraRuntime.h"
 #include "cira_cxl_job.h"
 #include "cira_mmio.h"
 #include "cira_mwait.h"
+#include "cira_shared_arena.h"
 
 #include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 
 namespace {
 
@@ -218,6 +223,113 @@ void test_doorbell_submit(cira_mmio_window_t *w) {
     firmware.join();
 }
 
+void test_kernel_id_submit() {
+    std::printf("kernel-id arena submission\n");
+
+    alignas(CIRA_CXL_CACHELINE_SIZE) static uint8_t arena_storage[0x10000] = {};
+    char arena_addr[32];
+    std::snprintf(arena_addr, sizeof(arena_addr), "0x%llx",
+                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(arena_storage)));
+    setenv("CIRA_CXL_ARENA_ADDR", arena_addr, 1);
+    setenv("CIRA_CXL_ARENA_SIZE", "0x10000", 1);
+    setenv("CIRA_CXL_ARENA_CONTROL_BYTES", "0x2000", 1);
+
+    cira_shared_arena_t *arena = cira_shared_arena_default();
+    check(arena != nullptr, "shared arena opens from the configured mapping");
+    if (!arena)
+        return;
+
+    cira_mmio_window_t *window = open_emulated_window();
+    check(window != nullptr, "kernel path has an emulated MMIO window");
+    if (!window)
+        return;
+    cira_mmio_set_default(window);
+
+    struct TypedArgs {
+        uint64_t link_offset;
+        uint32_t limit;
+        uint32_t padding;
+    };
+    void *link = cira_shared_arena_from_offset(arena, 0x3450, 8, 8);
+    uint64_t link_offset = cira::runtime::cira_offload_arg_offset(link, 8);
+    check(link_offset == 0x3450, "remote argument converts to its arena-relative offset");
+    TypedArgs typed_args{link_offset, 17, 0};
+    void *completion = cira::runtime::cira_future_alloc();
+    check(completion != nullptr, "kernel completion allocates from the shared arena");
+
+    constexpr uint64_t kKernelId = 0x0123456789abcdefULL;
+    int rc = cira::runtime::cira_offload_submit_kernel(kKernelId, &typed_args, sizeof(typed_args), completion, 0);
+    check(rc == cira::runtime::CIRA_KERNEL_SUBMIT_OK, "kernel-id runtime submission succeeds");
+
+    auto *base = static_cast<const std::byte *>(cira_mmio_base(window));
+    auto *slot = reinterpret_cast<const cira_cxl_arg_slot_t *>(base + cira_cxl_arg_slot_off(CIRA_CXL_JOB_CALL_V2));
+    auto *job = reinterpret_cast<const cira_cxl_call_job_v2_t *>(slot + 1);
+    check(job->kernel_id == kKernelId, "descriptor carries the manifest kernel ID");
+    check(job->args_size == sizeof(typed_args), "descriptor carries the packed argument size");
+
+    uint64_t completion_offset = UINT64_MAX;
+    check(cira_shared_arena_to_offset(arena, completion, CIRA_CXL_CACHELINE_SIZE, &completion_offset) == CIRA_ARENA_OK,
+          "completion converts to an arena offset");
+    check(job->completion_offset == completion_offset, "descriptor carries the arena-relative completion offset");
+
+    auto *copied_args = static_cast<const TypedArgs *>(
+        cira_shared_arena_from_offset(arena, job->args_offset, sizeof(TypedArgs), alignof(TypedArgs)));
+    check(copied_args != nullptr, "descriptor argument offset resolves inside the arena");
+    check(copied_args && std::memcmp(copied_args, &typed_args, sizeof(typed_args)) == 0,
+          "runtime copied the typed argument payload into the arena");
+    check(slot->version == CIRA_CXL_JOB_VERSION_KERNEL_ID && slot->job_id == CIRA_CXL_JOB_CALL_V2,
+          "kernel submission publishes the v2 slot header");
+
+    auto *doorbell = reinterpret_cast<const cira_cxl_doorbell_t *>(base + CIRA_CXL_DOORBELL_OFF);
+    cira_cxl_host_status_t status{CIRA_CXL_JOB_MAGIC, CIRA_CXL_JOB_VERSION_KERNEL_ID, CIRA_CXL_JOB_CALL_V2,
+                                  CIRA_CXL_STATUS_SUCCESS, doorbell->seq};
+    check(cira_mmio_write_block(window, CIRA_CXL_STATUS_OFF, &status, sizeof(status)) == CIRA_MMIO_OK,
+          "firmware status mirrors the tracked v2 sequence");
+    cira_mmio_signal_completion(completion, CIRA_CXL_STATUS_SUCCESS, 0);
+    (void)cira::runtime::cira_future_await(completion);
+    cira::runtime::cira_offload_require_success(rc, completion);
+    cira::runtime::cira_future_free(completion);
+
+    uint64_t committed_seq = doorbell->seq;
+    check(cira::runtime::cira_offload_arg_offset(&typed_args, 1) == UINT64_MAX,
+          "foreign remote argument conversion fails closed");
+    void *bad_completion = cira::runtime::cira_future_alloc();
+    rc = cira::runtime::cira_offload_submit_kernel(kKernelId, &typed_args, sizeof(typed_args), bad_completion, 0);
+    check(rc == cira::runtime::CIRA_KERNEL_SUBMIT_ECONVERT,
+          "submission returns the recorded argument conversion failure");
+    auto *bad_line = static_cast<cira_cxl_completion_t *>(bad_completion);
+    check(bad_line->magic == CIRA_CXL_COMPLETION_MAGIC && bad_line->status == CIRA_CXL_STATUS_BAD_ARGS,
+          "conversion failure publishes an explicit error completion");
+    check(doorbell->seq == committed_seq, "conversion failure does not commit another doorbell");
+    cira::runtime::cira_future_free(bad_completion);
+
+    cira_mmio_set_default(nullptr);
+    void *no_mmio_completion = cira::runtime::cira_future_alloc();
+    rc = cira::runtime::cira_offload_submit_kernel(kKernelId, &typed_args, sizeof(typed_args), no_mmio_completion, 0);
+    check(rc == cira::runtime::CIRA_KERNEL_SUBMIT_ENOMMIO,
+          "missing MMIO is returned instead of a successful completion");
+    auto *no_mmio_line = static_cast<cira_cxl_completion_t *>(no_mmio_completion);
+    check(no_mmio_line->magic == CIRA_CXL_COMPLETION_MAGIC && no_mmio_line->status == CIRA_CXL_STATUS_BAD_JOB,
+          "missing MMIO publishes an explicit failure status");
+    cira::runtime::cira_future_free(no_mmio_completion);
+
+    pid_t child = fork();
+    check(child >= 0, "fail-closed completion check starts a child process");
+    if (child == 0) {
+        alignas(CIRA_CXL_CACHELINE_SIZE) cira_cxl_completion_t failed{};
+        failed.magic = CIRA_CXL_COMPLETION_MAGIC;
+        failed.status = CIRA_CXL_STATUS_BAD_JOB;
+        cira::runtime::cira_offload_require_success(cira::runtime::CIRA_KERNEL_SUBMIT_ESUBMIT, &failed);
+        _exit(0);
+    }
+    if (child > 0) {
+        int child_status = 0;
+        check(waitpid(child, &child_status, 0) == child, "fail-closed child is collected");
+        check(WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGABRT,
+              "failed submission/completion aborts instead of continuing the query");
+    }
+}
+
 void test_no_device() {
     std::printf("no device configured\n");
     check(cira_mmio_submit_call(nullptr, nullptr, nullptr, 0, nullptr, nullptr) == CIRA_MMIO_ENODEV,
@@ -249,6 +361,8 @@ int main() {
     }
     test_doorbell_submit(w);
     cira_mmio_close(w);
+
+    test_kernel_id_submit();
 
     if (g_failures) {
         std::printf("\n%d check(s) failed\n", g_failures);

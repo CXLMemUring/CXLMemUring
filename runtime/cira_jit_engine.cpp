@@ -50,6 +50,9 @@ std::atomic<bool> g_targetInited{false};
 const char *const kRuntimeAbiSymbols[] = {
     // cira.offload / cira.barrier / futures
     "cira_offload_submit",
+    "cira_offload_arg_offset",
+    "cira_offload_submit_kernel",
+    "cira_offload_require_success",
     "cira_phase_barrier",
     "cira_future_alloc",
     "cira_future_free",
