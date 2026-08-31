@@ -1,0 +1,79 @@
+ m bench/DataFrame
+ m bench/MonetDB
+ m bench/gapbs
+ M profile_results/gapbs/bfs/.injected_time
+ M profile_results/gapbs/bfs/.vortex_time
+ M profile_results/gapbs/bfs/.x86_time
+ M profile_results/gapbs/bfs/bfs_twopass_profile.json
+ M profile_results/gapbs/bfs/combined_profile.json
+ M profile_results/gapbs/bfs/injected_profile.json
+ M profile_results/gapbs/bfs/vortex_rtlsim.json
+ M profile_results/gapbs/bfs/x86_baseline.json
+ M profile_results/gapbs/bfs/x86_injected_output.txt
+ M profile_results/gapbs/bfs/x86_output.txt
+ M profile_results/gapbs/experiment_results.json
+ M profile_results/gapbs/pr/.injected_time
+ M profile_results/gapbs/pr/.vortex_time
+ M profile_results/gapbs/pr/.x86_avg_time
+ M profile_results/gapbs/pr/.x86_time
+ M profile_results/gapbs/pr/combined_profile.json
+ M profile_results/gapbs/pr/injected_profile.json
+ M profile_results/gapbs/pr/pr_twopass_profile.json
+ M profile_results/gapbs/pr/vortex_rtlsim.json
+ M profile_results/gapbs/pr/x86_baseline.json
+ M profile_results/gapbs/pr/x86_injected_output.txt
+ M profile_results/gapbs/pr/x86_output.txt
+ M profile_results/gapbs/pr_spmv/.injected_time
+ M profile_results/gapbs/pr_spmv/.vortex_time
+ M profile_results/gapbs/pr_spmv/.x86_avg_time
+ M profile_results/gapbs/pr_spmv/.x86_time
+ M profile_results/gapbs/pr_spmv/combined_profile.json
+ M profile_results/gapbs/pr_spmv/injected_profile.json
+ M profile_results/gapbs/pr_spmv/pr_spmv_timing_annotations.h
+ M profile_results/gapbs/pr_spmv/pr_spmv_twopass_profile.json
+ M profile_results/gapbs/pr_spmv/vortex_rtlsim.json
+ M profile_results/gapbs/pr_spmv/x86_baseline.json
+ M profile_results/gapbs/pr_spmv/x86_injected_output.txt
+ M profile_results/gapbs/pr_spmv/x86_output.txt
+ M profile_results/gapbs/tc/.injected_time
+ M profile_results/gapbs/tc/.vortex_time
+ M profile_results/gapbs/tc/.x86_avg_time
+ M profile_results/gapbs/tc/.x86_time
+ M profile_results/gapbs/tc/combined_profile.json
+ M profile_results/gapbs/tc/injected_profile.json
+ M profile_results/gapbs/tc/tc_timing_annotations.h
+ M profile_results/gapbs/tc/tc_twopass_profile.json
+ M profile_results/gapbs/tc/vortex_rtlsim.json
+ M profile_results/gapbs/tc/x86_baseline.json
+ M profile_results/gapbs/tc/x86_injected_output.txt
+ M profile_results/gapbs/tc/x86_output.txt
+?? 6472666535e6f359942ddac6/
+?? 67a97c8f3267a4a15d2dd5c3/
+?? 697a667df59bdd0085f8ce88/
+?? 69b9d800c6776c7b3e614828/
+?? GPU_OFFLOADING_REPORT.txt
+?? apt_get_runtime_raw.pdf
+?? bat_storage.mlir
+?? bench/npb/
+?? bench/partitioned-hash-join/
+?? bench/spatter/
+?? bench/ume/
+?? cira_speedup_two_rows_with_geomean.pdf
+?? dataframe_performance.mlir
+?? figure4_raw_runtime.pdf
+?? figure4_raw_runtime_with_interval.pdf
+?? generate_graphs.py
+?? hetGPU/
+?? kernel_gpu.cpp
+?? llama-chat.mlir
+?? llama-context-dca8398d.mlir.tmp
+?? llama-grammar.mlir
+?? llama-graph.mlir
+?? llama.mlir
+?? pgo_profile.json
+?? rel_propagate.mlir
+?? scripts/__pycache__/
+?? test/mlir/__pycache__/
+?? test_gpu_offload.mlir
+?? type2_host_gpu.cpp
+ce003ee73027384191d42a4b2accf09c4e2b47b7

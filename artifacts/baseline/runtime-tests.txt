@@ -1,0 +1,23 @@
+Test project /home/victoryang00/CXLMemUring-monetdb-rv64-offload/build/runtime
+    Start 1: test_cira_jit
+1/6 Test #1: test_cira_jit .....................   Passed    0.01 sec
+    Start 2: test_cira_offload_path
+2/6 Test #2: test_cira_offload_path ............   Passed    0.03 sec
+    Start 3: test_cira_cache_completion_path
+3/6 Test #3: test_cira_cache_completion_path ...   Passed    0.02 sec
+    Start 4: test_offload_engine
+4/6 Test #4: test_offload_engine ...............Subprocess aborted***Exception:   0.12 sec
+test_offload_engine: /home/victoryang00/CXLMemUring-monetdb-rv64-offload/runtime/test/test_offload_engine.cpp:57: int main(): Assertion `e->from == static_cast<int>(10 + i)' failed.
+
+    Start 5: test_twopass_runtime
+5/6 Test #5: test_twopass_runtime ..............   Passed    0.02 sec
+    Start 6: test_cira_jit_engine
+6/6 Test #6: test_cira_jit_engine ..............   Passed    0.07 sec
+Errors while running CTest
+
+83% tests passed, 1 tests failed out of 6
+
+Total Test time (real) =   0.28 sec
+
+The following tests FAILED:
+	  4 - test_offload_engine (Subprocess aborted)
