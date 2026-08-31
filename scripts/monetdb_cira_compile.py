@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -43,6 +45,13 @@ def read_units(path: pathlib.Path) -> list[str]:
     return units
 
 
+def runtime_link_args(root: pathlib.Path) -> list[str]:
+    runtime = (root / "build/runtime/libcira_runtime.so.1.0.0").resolve()
+    if not runtime.is_file():
+        fail(f"CIRA runtime library is missing: {runtime}")
+    return [f"-DCIRA_RUNTIME_LIBRARY={runtime}"]
+
+
 def run(command: list[str], log: pathlib.Path, *, cwd: pathlib.Path, timeout: int = 900) -> float:
     start = time.monotonic()
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -61,11 +70,59 @@ def run(command: list[str], log: pathlib.Path, *, cwd: pathlib.Path, timeout: in
     return elapsed
 
 
+def verify_host_module_split(path: pathlib.Path) -> None:
+    module = path.read_text(encoding="utf-8", errors="replace")
+    if re.search(r"^define\b.*@__cira_rv64_[0-9a-f]+\(", module, re.MULTILINE):
+        fail(f"host LLVM module retains RV64 device code: {path}")
+    if re.search(
+        r"^\s*(?:tail\s+|musttail\s+|notail\s+)?call\b.*"
+        r"@cira_device_(?:checked_load|install_cacheline)\(",
+        module,
+        re.MULTILINE,
+    ):
+        fail(f"host LLVM module retains RV64 device helper calls: {path}")
+
+
+def remove_device_definitions(
+    source: pathlib.Path, destination: pathlib.Path, symbols: list[str]
+) -> None:
+    expected = set(symbols)
+    found: set[str] = set()
+    output: list[str] = []
+    skipping: str | None = None
+    for line in source.read_text(encoding="utf-8").splitlines(keepends=True):
+        if skipping is not None:
+            if line.strip() == "}":
+                skipping = None
+            continue
+        if line.startswith("define "):
+            matched = next(
+                (
+                    symbol
+                    for symbol in expected
+                    if re.search(rf"@{re.escape(symbol)}\(", line)
+                ),
+                None,
+            )
+            if matched is not None:
+                found.add(matched)
+                skipping = matched
+                continue
+        output.append(line)
+    if skipping is not None:
+        fail(f"unterminated RV64 kernel definition @{skipping} in {source}")
+    if found != expected:
+        missing = sorted(expected - found)
+        fail(f"host/device split could not find kernel definitions: {missing}")
+    destination.write_text("".join(output), encoding="utf-8")
+
+
 def configure(root: pathlib.Path, build: pathlib.Path) -> None:
     command = [
         "cmake", "-S", str(root / "bench/MonetDB"), "-B", str(build), "-G", "Ninja",
         "-DTESTING=OFF", "-DSTRICT=OFF", "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=/usr/bin/clang", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        *runtime_link_args(root),
     ]
     run(command, build / "cira-logs/configure.log", cwd=root)
 
@@ -75,7 +132,10 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
     cira = pathlib.Path(os.environ.get("CIRA_BIN", root / "build/bin/cira"))
     mlir_translate = pathlib.Path(os.environ.get("MLIR_TRANSLATE_BIN", root.parent / "clangir/build/bin/mlir-translate"))
     llc = pathlib.Path(os.environ.get("LLC_BIN", root.parent / "clangir/build/bin/llc"))
-    for tool in (clang, cira, mlir_translate, llc):
+    llvm_extract = pathlib.Path(
+        os.environ.get("LLVM_EXTRACT_BIN", root.parent / "clangir/build/bin/llvm-extract")
+    )
+    for tool in (clang, cira, mlir_translate, llc, llvm_extract):
         if not tool.is_file() or not os.access(tool, os.X_OK):
             fail(f"required tool is not executable: {tool}")
 
@@ -102,6 +162,7 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
     unit_dir.mkdir(parents=True, exist_ok=True)
     cir = unit_dir / "input.cir"
     lowered = unit_dir / "host.llvm.mlir"
+    combined_llvm_ir = unit_dir / "combined.ll"
     llvm_ir = unit_dir / "host.ll"
     host_object = unit_dir / "host.o"
     manifest = unit_dir / "kernels.json"
@@ -140,21 +201,63 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
     )
     timings["llvm_translation_seconds"] = run(
         [str(mlir_translate), "--allow-unregistered-dialect", "--mlir-to-llvmir", str(lowered),
-         "-o", str(llvm_ir)],
+         "-o", str(combined_llvm_ir)],
         logs / "03-llvm-translation.log", cwd=root,
     )
-    timings["object_codegen_seconds"] = run(
-        [str(llc), "-O2", "-filetype=obj", "-relocation-model=pic", "-disable-cgp",
-         "-mtriple=x86_64-unknown-linux-gnu", str(llvm_ir), "-o", str(host_object)],
-        logs / "04-object-codegen.log", cwd=root,
-    )
 
-    kernel_ids: list[str] = []
+    kernel_records: list[dict] = []
     if manifest.is_file():
         data = json.loads(manifest.read_text(encoding="utf-8"))
         if data.get("abi_version") != 2:
             fail(f"{source_rel} produced a non-v2 kernel manifest")
-        kernel_ids = [kernel["kernel_id"] for kernel in data.get("kernels", [])]
+        kernel_records = data.get("kernels", [])
+
+    rv64_dir = unit_dir / "rv64"
+    rv64_dir.mkdir(parents=True, exist_ok=True)
+    device_artifacts: list[dict] = []
+    extraction_seconds = 0.0
+    device_codegen_seconds = 0.0
+    for kernel in kernel_records:
+        symbol = kernel["symbol"]
+        kernel_id = kernel["kernel_id"].removeprefix("0x")
+        device_ir = rv64_dir / f"{kernel_id}.ll"
+        device_object = rv64_dir / f"{kernel_id}.o"
+        extraction_seconds += run(
+            [str(llvm_extract), "--recursive", f"--func={symbol}", "-S",
+             str(combined_llvm_ir), "-o", str(device_ir)],
+            logs / "device" / f"extract-{kernel_id}.log", cwd=root,
+        )
+        device_codegen_seconds += run(
+            [str(llc), "-O2", "-filetype=obj", "-relocation-model=pic",
+             "-mtriple=riscv64-unknown-elf", str(device_ir), "-o", str(device_object)],
+            logs / "device" / f"codegen-{kernel_id}.log", cwd=root,
+        )
+        device_artifacts.append({
+            "kernel_id": kernel["kernel_id"],
+            "symbol": symbol,
+            "llvm_ir": str(device_ir),
+            "object": str(device_object),
+        })
+
+    if kernel_records:
+        start = time.monotonic()
+        remove_device_definitions(
+            combined_llvm_ir, llvm_ir,
+            [kernel["symbol"] for kernel in kernel_records],
+        )
+        extraction_seconds += time.monotonic() - start
+    else:
+        shutil.copyfile(combined_llvm_ir, llvm_ir)
+    timings["host_device_split_seconds"] = extraction_seconds
+    timings["device_codegen_seconds"] = device_codegen_seconds
+    verify_host_module_split(llvm_ir)
+    timings["object_codegen_seconds"] = run(
+        [str(llc), "-O2", "-filetype=obj", "-relocation-model=pic", "-disable-cgp",
+         "-mtriple=x86_64-unknown-linux-gnu", str(llvm_ir), "-o", str(host_object)],
+        logs / "05-host-object-codegen.log", cwd=root,
+    )
+
+    kernel_ids = [kernel["kernel_id"] for kernel in kernel_records]
     return {
         "source": source_rel,
         "mode": "cira-hetero",
@@ -164,8 +267,10 @@ def compile_entry(entry: dict, source_rel: str, root: pathlib.Path, work: pathli
         "object": str(host_object),
         "kernel_ids": kernel_ids,
         "artifacts": {
-            "cir": str(cir), "host_llvm_mlir": str(lowered), "llvm_ir": str(llvm_ir),
+            "cir": str(cir), "host_llvm_mlir": str(lowered),
+            "combined_llvm_ir": str(combined_llvm_ir), "llvm_ir": str(llvm_ir),
             "host_object": str(host_object), "manifest": str(manifest),
+            "rv64_kernels": device_artifacts,
         },
         "timings": timings,
     }
@@ -207,36 +312,116 @@ def compile_native_overlay(entry: dict, root: pathlib.Path, log: pathlib.Path) -
     command = list(command)
     command[0] = "/usr/bin/clang"
     command.insert(1, "-DCIRA_MONETDB_SHARED_ARENA=1")
+    destination = output_path(entry)
+    previous_stat = destination.stat()
+    run(command, log, cwd=pathlib.Path(entry["directory"]))
+    os.utime(destination, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns))
+    return destination
+
+
+def restore_native_object(entry: dict, root: pathlib.Path, log: pathlib.Path) -> pathlib.Path:
+    command = entry.get("arguments") or shlex.split(entry["command"])
+    command = list(command)
+    command[0] = "/usr/bin/clang"
     run(command, log, cwd=pathlib.Path(entry["directory"]))
     return output_path(entry)
+
+
+def replace_object_preserving_ninja_mtime(source: pathlib.Path, destination: pathlib.Path) -> None:
+    """Replace an object without invalidating Ninja's gcc-style deps record."""
+    previous_stat = destination.stat()
+    shutil.copyfile(source, destination)
+    os.chmod(destination, previous_stat.st_mode)
+    os.utime(destination, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns))
+
+
+def force_relink(path: pathlib.Path) -> None:
+    target = path.resolve(strict=True)
+    previous_stat = target.stat()
+    os.utime(target, ns=(previous_stat.st_atime_ns, 1))
+
+
+def find_real_library(directory: pathlib.Path, stem: str) -> pathlib.Path:
+    candidates = sorted(
+        path for path in directory.glob(f"{stem}-*.so.*")
+        if path.is_file() and not path.is_symlink()
+    )
+    if len(candidates) != 1:
+        fail(
+            f"expected one real {stem} library in {directory}, "
+            f"found {[str(path) for path in candidates]}"
+        )
+    return candidates[0]
+
+
+def file_digest(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_final_overlays(records: dict, final_objects: dict[str, pathlib.Path]) -> None:
+    for source_rel, destination in final_objects.items():
+        source = pathlib.Path(records[source_rel]["artifacts"]["host_object"])
+        if file_digest(source) != file_digest(destination):
+            fail(
+                f"{source_rel} was overwritten after CIRA overlay; "
+                "the final MonetDB binary would silently use a native object"
+            )
 
 
 def build_server(root: pathlib.Path, units_path: pathlib.Path, contract_path: pathlib.Path) -> None:
     check_units(root, units_path, contract_path)
     native_build = root / "build/monetdb-cira-native"
     parallel = str(max(1, min(os.cpu_count() or 1, 16)))
+    compile_commands = json.loads((native_build / "compile_commands.json").read_text(encoding="utf-8"))
+    by_source = {str(pathlib.Path(entry["file"]).resolve()): entry for entry in compile_commands}
+    # A failed prior relink may leave CIRA objects in the native Ninja tree.
+    # Restore every targeted object before asking Ninja to establish the clean
+    # baseline, so build_server is safe to rerun after any fail-closed exit.
+    for source_rel in read_units(units_path):
+        entry = by_source[str((root / "bench/MonetDB" / source_rel).resolve())]
+        restore_native_object(
+            entry, root,
+            native_build / "cira-logs/07-restore" / (pathlib.Path(source_rel).stem + ".log"),
+        )
     run(["cmake", "--build", str(native_build), "--target", "mserver5", "--parallel", parallel],
         native_build / "cira-logs/08-native-server.log", cwd=root, timeout=1800)
 
-    compile_commands = json.loads((native_build / "compile_commands.json").read_text(encoding="utf-8"))
-    by_source = {str(pathlib.Path(entry["file"]).resolve()): entry for entry in compile_commands}
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     records = {record["source"]: record for record in contract["units"]}
-    for source_rel in read_units(units_path):
-        entry = by_source[str((root / "bench/MonetDB" / source_rel).resolve())]
-        destination = output_path(entry)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(records[source_rel]["artifacts"]["host_object"], destination)
-        os.utime(destination, None)
-        records[source_rel]["object"] = str(destination)
 
+    # Compile opt-in allocation hooks before copying the CIRA objects.  A
+    # generated MonetDB version header may legitimately change during the
+    # first build and invalidate every GDK object; placing the CIRA overlay
+    # last prevents that build step from silently replacing it.
     for source_rel in ("gdk/gdk_heap.c", "gdk/gdk_utils.c"):
         entry = by_source[str((root / "bench/MonetDB" / source_rel).resolve())]
         compile_native_overlay(entry, root, native_build / "cira-logs" / (pathlib.Path(source_rel).stem + ".log"))
 
-    contract_path.write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
+    final_objects: dict[str, pathlib.Path] = {}
+    for source_rel in read_units(units_path):
+        entry = by_source[str((root / "bench/MonetDB" / source_rel).resolve())]
+        destination = output_path(entry)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        replace_object_preserving_ninja_mtime(
+            pathlib.Path(records[source_rel]["artifacts"]["host_object"]), destination
+        )
+        final_objects[source_rel] = destination
+        records[source_rel]["object"] = str(destination)
+
+    # The object mtimes intentionally remain unchanged so Ninja keeps their
+    # existing dependency records.  Mark only the containing shared libraries
+    # old, causing Ninja to relink them and mserver5 without recompiling the
+    # externally produced objects.
+    force_relink(find_real_library(native_build / "gdk", "libbat"))
+    force_relink(find_real_library(native_build / "monetdb5/tools", "libmonetdb5"))
     run(["cmake", "--build", str(native_build), "--target", "mserver5", "--parallel", parallel],
         native_build / "cira-logs/09-relink-server.log", cwd=root, timeout=1800)
+    verify_final_overlays(records, final_objects)
+    contract_path.write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
 
     candidates = [native_build / "tools/mserver/mserver5", native_build / "bin/mserver5"]
     server = next((candidate for candidate in candidates if candidate.is_file()), None)
