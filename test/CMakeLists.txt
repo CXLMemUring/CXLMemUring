@@ -43,7 +43,25 @@ if(FILECHECK_EXECUTABLE)
     NAME region_merge_schedule
     COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/region_merge_schedule.mlir --cira-region-formation='require-profitable=false' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/region_merge_schedule.mlir"
   )
+  add_test(
+    NAME outline_rv64
+    COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/outline_rv64_kernels.mlir --cira-outline-rv64-kernels='manifest=${CMAKE_BINARY_DIR}/test_ctest_out/outline-rv64.json module-id=monetdb' | ${FILECHECK_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/outline_rv64_kernels.mlir"
+  )
 endif()
+
+add_test(
+  NAME kernel_manifest
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/test/check_kernel_manifest.py
+          ${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/outline_rv64_kernels.mlir
+)
+
+add_test(
+  NAME outline_rv64_reject_unresolved_call
+  COMMAND ${BASH_EXECUTABLE} -lc "${CMAKE_BINARY_DIR}/bin/cira ${CMAKE_SOURCE_DIR}/test/outline_rv64_reject.mlir --cira-outline-rv64-kernels=manifest=${CMAKE_BINARY_DIR}/test_ctest_out/rejected.json 2>${CMAKE_BINARY_DIR}/test_ctest_out/outline-rv64-reject.err; status=\$?; grep -q 'cannot outline RV64 kernel.*unresolved call.*host_lookup' ${CMAKE_BINARY_DIR}/test_ctest_out/outline-rv64-reject.err || exit 0; test \$status -ne 0 || exit 0; exit 1"
+)
+set_tests_properties(outline_rv64_reject_unresolved_call PROPERTIES
+  WILL_FAIL TRUE
+)
 
 # Per-MLIR tests for finer-grained reporting
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/test_ctest_out)

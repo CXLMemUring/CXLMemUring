@@ -44,6 +44,27 @@ def CiraRegionFormation : Pass<"cira-region-formation", "::mlir::ModuleOp"> {
   let dependentDialects = ["::mlir::cira::RemoteMemDialect"];
 }
 
+def CiraOutlineRv64Kernels : Pass<"cira-outline-rv64-kernels", "::mlir::ModuleOp"> {
+  let summary = "Outline CIRA regions as deterministic typed RV64 kernels";
+  let description = [{
+    Validates read-only CIRA regions, assigns stable SHA-256-derived kernel
+    identifiers, outlines a typed RV64 entry point for each region, and emits
+    the ABI-v2 kernel manifest consumed by the device linker and firmware.
+  }];
+  let options = [
+    Option<"manifest", "manifest", "std::string", /*default=*/"\"\"",
+           "Path to the deterministic kernel manifest">,
+    Option<"moduleId", "module-id", "std::string", /*default=*/"\"module\"",
+           "Stable module identity used when deriving kernel IDs">
+  ];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::func::FuncDialect",
+    "::mlir::LLVM::LLVMDialect",
+    "::mlir::cira::RemoteMemDialect"
+  ];
+}
+
 def GpuOffloadDecision : Pass<"gpu-offload-decision", "::mlir::ModuleOp"> {
   let summary = "Analyze operations and decide which should be offloaded to GPU";
   let description = [{
