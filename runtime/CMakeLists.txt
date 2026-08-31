@@ -55,6 +55,7 @@ set(RUNTIME_SOURCES
     cira_jit.cpp                      # JIT cost model (no LLVM dependency)
     cira_mwait.cpp                    # cache-resident wait (UMWAIT/TPAUSE/WFE)
     cira_mmio.cpp                     # CXL Type-2 control window + doorbell
+    cira_shared_arena.cpp             # bounded host/device CXL-memory arena
 )
 
 # Optional: ORC JIT engine. Built only when LLVM is discoverable so the
