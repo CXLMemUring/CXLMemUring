@@ -145,6 +145,15 @@ EOF
   exit 0
 fi
 
+# The heterogeneous MonetDB build is deliberately targeted and fail closed.
+# Its launcher uses MonetDB's own CMake compile database, so every unlisted
+# source remains on the native build while every listed source must complete
+# region formation, RV64 outlining, and heterogeneous host lowering.
+if [[ "${1:-}" == "monetdb" && "${PIPELINE_LLVM_LOWERING:-}" == "hetero" ]]; then
+  exec "${REPO_ROOT}/scripts/build_monetdb_tpch_cira.sh" --server-only \
+    --contract "${CIRA_MONETDB_BUILD_CONTRACT:-${REPO_ROOT}/build/monetdb_pipeline/build-contract.json}"
+fi
+
 BENCHMARK="${1:-gapbs}"
 BENCHMARK_KEY="${BENCHMARK,,}"
 LOG_PREFIX="${BENCHMARK}"

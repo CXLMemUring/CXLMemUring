@@ -1,0 +1,7 @@
+# source queries role
+gdk/gdk_select.c q6 scan
+gdk/gdk_aggr.c q1 aggregation
+gdk/gdk_join.c q9,q11 join
+gdk/gdk_cand.c q11 candidate
+gdk/gdk_string.c q13 grouping-traversal
+monetdb5/modules/mal/pcre.c q13 string-group
