@@ -87,3 +87,19 @@ func.func @livein_dominates_submit(%idx: memref<?xi64, 1>,
   %v = memref.load %data[%next_i] : memref<?xi64, 1>
   return %v : i64
 }
+
+// A host-memory load may compute a scalar device index, but the host pointer
+// itself must not be captured or dereferenced inside the offload region.
+// CHECK-LABEL: func.func @host_load_stays_outside
+// CHECK: %[[INDEX:.*]] = memref.load %arg0
+// CHECK-NEXT: cira.offload
+// CHECK-SAME: %[[INDEX]]
+// CHECK: cira.barrier
+// CHECK-NEXT: %{{.*}} = memref.load %arg1
+func.func @host_load_stays_outside(%host_index: memref<1xindex>,
+                                   %data: memref<?xi64, 1>) -> i64 {
+  %c0 = arith.constant 0 : index
+  %index = memref.load %host_index[%c0] : memref<1xindex>
+  %value = memref.load %data[%index] : memref<?xi64, 1>
+  return %value : i64
+}

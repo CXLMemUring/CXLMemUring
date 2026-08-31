@@ -376,7 +376,16 @@ bool mlir::cira::isHostOnlyOp(Operation *op) {
     return !isMemoryEffectFree(op);
 }
 
-bool mlir::cira::isDeviceLegalOp(Operation *op) { return isSupportedSliceOp(op) && !isHostOnlyOp(op); }
+bool mlir::cira::isDeviceLegalOp(Operation *op) {
+    if (!isSupportedSliceOp(op) || isHostOnlyOp(op))
+        return false;
+    // A supported load is still device-illegal when it dereferences host DRAM.
+    // Keep that load on the host and capture its scalar result instead of
+    // allowing the underlying host pointer to cross the device boundary.
+    if (isMemoryRead(op) && !isRemoteMemoryAccess(op))
+        return false;
+    return true;
+}
 
 StringRef mlir::cira::getBoundaryReasonName(SliceBoundaryReason reason) {
     switch (reason) {

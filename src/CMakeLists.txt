@@ -10,6 +10,7 @@ get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 # Base libs for CIR and Clang
 set(CIRA_BASE_LIBS
   MLIRCIR
+  ${CIRA_CIR_THROUGH_MLIR_LIBRARY}
   clang-cpp
 )
 
@@ -34,7 +35,6 @@ target_link_libraries(cira PUBLIC
   ${CIRA_BASE_LIBS}
   ${CIRA_MLIR_LIBS}
   # ClangIR lowering through MLIR and helpers (provides createConvertCIRToMLIRPass)
-  clangCIRLoweringThroughMLIR
   clangCIRLoweringHelpers
   # Ensure CIR transform registrations are linked
   MLIRCIRTransforms

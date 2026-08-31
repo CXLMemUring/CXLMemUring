@@ -20,6 +20,9 @@ endif()
 
 find_package(Clang REQUIRED CONFIG)
 
+set(CIRA_CLANGIR_BUILD_DIR "" CACHE PATH
+    "Optional ClangIR build tree whose updated lowering archives take precedence")
+
 # Manually create CIR library targets if they don't exist (common with ClangIR installs)
 if(NOT TARGET MLIRCIR)
   message(STATUS "Creating MLIRCIR imported target manually")
@@ -60,6 +63,19 @@ endif()
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
+
+set(CIRA_CIR_THROUGH_MLIR_LIBRARY clangCIRLoweringThroughMLIR)
+if(CIRA_CLANGIR_BUILD_DIR)
+  set(_cira_local_through_mlir
+      "${CIRA_CLANGIR_BUILD_DIR}/lib/libclangCIRLoweringThroughMLIR.a")
+  if(NOT EXISTS "${_cira_local_through_mlir}")
+    message(FATAL_ERROR
+      "CIRA_CLANGIR_BUILD_DIR has no libclangCIRLoweringThroughMLIR.a: "
+      "${CIRA_CLANGIR_BUILD_DIR}")
+  endif()
+  set(CIRA_CIR_THROUGH_MLIR_LIBRARY "${_cira_local_through_mlir}")
+  message(STATUS "Using local ClangIR lowering: ${_cira_local_through_mlir}")
+endif()
 
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)

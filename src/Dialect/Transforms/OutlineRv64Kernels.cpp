@@ -2,6 +2,7 @@
 
 #include "Dialect/CiraOps.h"
 #include "Dialect/RemoteMem.h"
+#include "Dialect/Transforms/BackwardSlice.h"
 #include "Dialect/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -112,6 +113,16 @@ static bool isHostPointerType(Type type) {
     return false;
 }
 
+static bool isRemotePointerValue(Value value) {
+    Type type = value.getType();
+    if (!isa<MemRefType, LLVM::LLVMPointerType, HandleType, RemoteMemRefType>(type))
+        return false;
+    RemoteProvenance provenance = getRemoteProvenance(value);
+    if (provenance == RemoteProvenance::Local)
+        return false;
+    return provenance == RemoteProvenance::Remote || isRemotePointerType(type);
+}
+
 static uint64_t alignTo(uint64_t value, uint64_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
 
 static FailureOr<PackedArgument> classifyArgument(Value operand, unsigned index) {
@@ -119,7 +130,7 @@ static FailureOr<PackedArgument> classifyArgument(Value operand, unsigned index)
     arg.name = "arg" + std::to_string(index);
     arg.mlirType = operand.getType();
 
-    if (isRemotePointerType(arg.mlirType)) {
+    if (isRemotePointerValue(operand)) {
         arg.size = arg.alignment = 8;
         arg.type = "arena_offset";
         arg.remoteOffset = true;
@@ -164,7 +175,7 @@ static bool hasForbiddenEffect(Operation *op) {
 
 static LogicalResult validateRegion(OffloadRegionOp region) {
     for (Value operand : region.getOperands()) {
-        if (isHostPointerType(operand.getType()))
+        if (isHostPointerType(operand.getType()) && !isRemotePointerValue(operand))
             return region.emitError("cannot outline RV64 kernel: host pointer crosses device boundary");
         if (failed(classifyArgument(operand, 0)))
             return region.emitError("cannot outline RV64 kernel: unsupported boundary type ") << operand.getType();

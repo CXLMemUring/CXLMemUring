@@ -65,6 +65,26 @@ def CiraOutlineRv64Kernels : Pass<"cira-outline-rv64-kernels", "::mlir::ModuleOp
   ];
 }
 
+def CiraPruneUnreachableBlocks : Pass<"cira-prune-unreachable-blocks", "::mlir::ModuleOp"> {
+  let summary = "Remove unreachable CFG blocks before dialect conversion";
+  let description = [{
+    Removes blocks that cannot be reached from their region entry. MLIR dialect
+    conversion intentionally skips unreachable blocks, so leaving them in the
+    module can strand operations from dialects that are otherwise fully
+    converted (for example, cf branches created from unreachable SCF code).
+  }];
+}
+
+def CiraFinalizeLLVMMaterializations : Pass<"cira-finalize-llvm-materializations", "::mlir::ModuleOp"> {
+  let summary = "Resolve pointer materializations before LLVM IR translation";
+  let description = [{
+    Converts one-to-one LLVM pointer materializations into explicit
+    llvm.addrspacecast operations, removes unused materializations, and fails
+    closed if any unsupported unrealized conversion remains.
+  }];
+  let dependentDialects = ["::mlir::LLVM::LLVMDialect"];
+}
+
 def GpuOffloadDecision : Pass<"gpu-offload-decision", "::mlir::ModuleOp"> {
   let summary = "Analyze operations and decide which should be offloaded to GPU";
   let description = [{

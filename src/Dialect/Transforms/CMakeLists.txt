@@ -3,6 +3,8 @@ add_mlir_dialect_library(MLIRRMEMTransforms
         BackwardSlice.cpp
         RegionFormation.cpp
         OutlineRv64Kernels.cpp
+        PruneUnreachableBlocks.cpp
+        FinalizeLLVMMaterializations.cpp
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include
 

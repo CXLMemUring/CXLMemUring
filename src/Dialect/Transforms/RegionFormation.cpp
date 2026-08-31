@@ -19,6 +19,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/Debug.h"
 
@@ -58,6 +59,27 @@ struct RegionCandidate {
     Block *block = nullptr;
     unsigned chainDepth = 0;
 };
+
+/// A read that exists only to form another memory address belongs to that
+/// dependent access's slice; emitting a second root-only region would duplicate
+/// work and can incorrectly prepare the read side of a host-only store.
+static bool feedsAnotherMemoryAddress(Operation *root) {
+    SmallVector<Value> worklist(root->getResults());
+    DenseSet<Value> visited;
+    while (!worklist.empty()) {
+        Value value = worklist.pop_back_val();
+        if (!visited.insert(value).second)
+            continue;
+        for (OpOperand &use : value.getUses()) {
+            Operation *user = use.getOwner();
+            if (user != root && llvm::is_contained(getAddressOperands(user), value))
+                return true;
+            if (!isMemoryRead(user) && isMemoryEffectFree(user))
+                llvm::append_range(worklist, user->getResults());
+        }
+    }
+    return false;
+}
 
 class CiraRegionFormationPass : public impl::CiraRegionFormationBase<CiraRegionFormationPass> {
 public:
@@ -138,11 +160,13 @@ private:
         BackwardSliceResult slice = computeBackwardSlice(root, options);
         pruneUnsupported(slice);
 
-        if (!isDeviceLegal(slice)) {
+        const bool forcedRootOnly = !requireProfitable && slice.ops.empty() && isDeviceLegalOp(root) &&
+                                    !feedsAnotherMemoryAddress(root);
+        if (!forcedRootOnly && !isDeviceLegal(slice)) {
             LLVM_DEBUG(llvm::dbgs() << "slice not device-legal at " << *root << "\n");
             return false;
         }
-        if (!hasRemoteDependence(slice)) {
+        if (requireProfitable && !hasRemoteDependence(slice)) {
             LLVM_DEBUG(llvm::dbgs() << "slice has no remote dependence at " << *root << "\n");
             return false;
         }
@@ -158,7 +182,7 @@ private:
         for (Operation *op : slice.ops)
             if (op->getBlock() == candidate.block)
                 candidate.ops.push_back(op);
-        if (candidate.ops.empty() || !llvm::any_of(candidate.ops, isMemoryRead))
+        if (requireProfitable && (candidate.ops.empty() || !llvm::any_of(candidate.ops, isMemoryRead)))
             return false;
         candidate.liveIns = computeSliceLiveIns(candidate.ops, candidate.roots);
         return true;
