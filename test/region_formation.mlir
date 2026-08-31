@@ -1,4 +1,5 @@
 // RUN: cira %s --cira-region-formation="require-profitable=false" | FileCheck %s
+// RUN: cira %s --cira-region-formation="require-profitable=false" --convert-cira-to-llvm-hetero | FileCheck %s --check-prefix=HETERO
 
 // Indirect (gather) access: the load of the index feeds the address of the
 // remote data load, so the backward slice must capture it.
@@ -19,10 +20,10 @@ func.func @gather(%idx: memref<?xi64, 1>, %data: memref<?xf32, 1>, %n: index) ->
   return %r : f32
 }
 
-// A direct, non-indirect access has no remote dependence in its slice and must
-// not be offloaded.
+// The explicit profitability override deliberately permits a root-only direct
+// remote load so build/readiness runs cannot silently form zero regions.
 // CHECK-LABEL: func.func @direct
-// CHECK-NOT: cira.offload
+// CHECK: cira.offload(%{{.*}}) attributes {{.*}}cira.chain_depth = 1
 func.func @direct(%data: memref<?xf32, 1>, %n: index) -> f32 {
   %c0 = arith.constant 0 : index
   %v = memref.load %data[%c0] : memref<?xf32, 1>
@@ -49,3 +50,11 @@ func.func @chase(%idx: memref<?xi64, 1>, %data: memref<?xf32, 1>, %i: index) -> 
   %v = memref.load %data[%off] : memref<?xf32, 1>
   return %v : f32
 }
+
+// The extracted device kernels must carry the offload region live-ins.  A
+// zero-argument kernel leaves cloned loads referring to unmapped block
+// arguments and cannot be compiled or dispatched.
+// HETERO: llvm.call @cira_get_device_func_addr
+// HETERO-NOT: cira.offload
+// HETERO: func.func @__vortex_kernel_0(
+// HETERO-SAME: memref<

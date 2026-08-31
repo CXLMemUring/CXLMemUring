@@ -51,6 +51,7 @@ struct RemoteMemRef {
     void* base_addr;
     size_t size;
     MemoryTier tier;
+    // Opaque client metadata. Indexed OffloadEngine access uses element_size.
     uint64_t metadata;
     size_t element_size;
 };

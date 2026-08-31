@@ -32,13 +32,12 @@ if [[ -z "${MLIR_TRANSLATE_BIN:-}" ]]; then
   fi
 fi
 if [[ -z "${LLC_BIN:-}" ]]; then
-  # Prefer system LLC over clangir LLC due to codegen bugs in clangir's version.
-  # The LLVM IR attribute syntax is fixed by sed post-processing above.
-  # Use explicit /usr/bin/llc since PATH may have clangir first.
-  if [[ -x "/usr/bin/llc" ]]; then
-    LLC_BIN="/usr/bin/llc"
-  elif [[ -x "${LOCAL_LLC_BIN}" ]]; then
+  # Keep every stage on the same LLVM revision. Mixing the ClangIR/MLIR build
+  # with a system llc can silently change or reject the generated IR.
+  if [[ -x "${LOCAL_LLC_BIN}" ]]; then
     LLC_BIN="${LOCAL_LLC_BIN}"
+  elif [[ -x "/usr/bin/llc" ]]; then
+    LLC_BIN="/usr/bin/llc"
   else
     LLC_BIN="$(command -v llc || true)"
   fi
@@ -141,6 +140,18 @@ Environment overrides:
   PIPELINE_WORK_ROOT  Base directory for intermediate build artifacts (default: \
                      "${REPO_ROOT}/build")
   PIPELINE_BIN_ROOT   Base directory for linked binaries (default: "${REPO_ROOT}/bin")
+  PIPELINE_LLVM_LOWERING
+                      cira/hetero (default) runs region formation and heterogeneous
+                      lowering; direct explicitly bypasses CIRA.
+  PIPELINE_GAPBS_LEGACY_HOOKS
+                      Set to 1 only to inject the legacy hard-coded GAPBS hooks.
+  PIPELINE_ALLOW_NATIVE_FALLBACK
+                      Set to 1 to permit workload translation units to bypass
+                      ClangIR/CIRA when using the heterogeneous path.
+  CIRA_REGION_FORMATION_OPTIONS
+                      Options passed to cira-region-formation (default:
+                      require-profitable=false, so runtime profiling/JIT can
+                      make the final offload decision).
 EOF
   exit 0
 fi
@@ -157,6 +168,18 @@ fi
 BENCHMARK="${1:-gapbs}"
 BENCHMARK_KEY="${BENCHMARK,,}"
 LOG_PREFIX="${BENCHMARK}"
+
+PIPELINE_LLVM_LOWERING="${PIPELINE_LLVM_LOWERING:-cira}"
+case "${PIPELINE_LLVM_LOWERING}" in
+  cira|hetero) USE_DIRECT_PATH=false ;;
+  direct) USE_DIRECT_PATH=true ;;
+  *) die "Unknown PIPELINE_LLVM_LOWERING='${PIPELINE_LLVM_LOWERING}' (expected cira, hetero, or direct)" ;;
+esac
+ALLOW_NATIVE_FALLBACK=false
+if [[ "${USE_DIRECT_PATH}" == "true" || "${PIPELINE_ALLOW_NATIVE_FALLBACK:-0}" == "1" ]]; then
+  ALLOW_NATIVE_FALLBACK=true
+fi
+CIRA_REGION_FORMATION_OPTIONS="${CIRA_REGION_FORMATION_OPTIONS:-require-profitable=false}"
 
 declare BENCHMARK_ID=""
 declare BIN_NAME=""
@@ -438,6 +461,7 @@ append_flags_from_env "${BENCHMARK_ID}_EXTRA_LDFLAGS" LINK_FLAGS
 
 ARCHES=("x86_64-unknown-linux-gnu" "riscv64-unknown-linux-gnu")
 LL_FILES=()
+CIRA_REGION_COUNT=0
 
 info "Translating ${BENCHMARK} sources through ClangIR and Cira"
 X86_ARCH="x86_64-unknown-linux-gnu"
@@ -475,7 +499,7 @@ for src in "${SOURCES[@]}"; do
   # ClangIR direct lowering currently produces an SSSP binary that crashes in
   # the kernel. Keep SSSP on native LLVM IR while still injecting the same CIRA
   # runtime marker before llc, so the resulting x86 binary remains instrumented.
-  if [[ "${BENCHMARK_ID}" == "GAPBS" && "$(basename "${src}")" == "sssp.cc" ]]; then
+  if [[ "${ALLOW_NATIVE_FALLBACK}" == "true" && "${BENCHMARK_ID}" == "GAPBS" && "$(basename "${src}")" == "sssp.cc" ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -537,7 +561,7 @@ for src in "${SOURCES[@]}"; do
   # Compile them natively for x86_64 and bypass the CIR/MLIR pipeline.
   # - llama-arch.cpp: extremely large nested initializer lists (SROA crash)
   # - llama-batch.cpp: complex template instantiations causing CIR hang
-  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-arch.cpp || "${src}" == */llama-batch.cpp ) ]]; then
+  if [[ "${ALLOW_NATIVE_FALLBACK}" == "true" && "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-arch.cpp || "${src}" == */llama-batch.cpp ) ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -558,7 +582,7 @@ for src in "${SOURCES[@]}"; do
   # Workaround: Files with std::regex cannot be lowered through CIR-to-LLVM
   # because std::regex types cause UnrealizedConversionCast crashes.
   # Compile these natively with full optimizations using system clang/g++.
-  if [[ "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-grammar.cpp || "${src}" == */llama-model.cpp || "${src}" == */llama-model-loader.cpp || "${src}" == */llama-model-saver.cpp || "${src}" == */llama-quant.cpp || "${src}" == */llama-sampling.cpp || "${src}" == */unicode.cpp || "${src}" == */common.cpp || "${src}" == */json-schema-to-grammar.cpp || "${src}" == */arg.cpp ) ]]; then
+  if [[ "${ALLOW_NATIVE_FALLBACK}" == "true" && "${BENCHMARK_ID}" == "LLAMACPP" && ( "${src}" == */llama-grammar.cpp || "${src}" == */llama-model.cpp || "${src}" == */llama-model-loader.cpp || "${src}" == */llama-model-saver.cpp || "${src}" == */llama-quant.cpp || "${src}" == */llama-sampling.cpp || "${src}" == */unicode.cpp || "${src}" == */common.cpp || "${src}" == */json-schema-to-grammar.cpp || "${src}" == */arg.cpp ) ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -575,7 +599,7 @@ for src in "${SOURCES[@]}"; do
 
   # Workaround: DataFrame benchmark main file has extremely complex C++ templates
   # that cause the CIR pipeline to hang. Compile natively.
-  if [[ "${BENCHMARK_ID}" == "DATAFRAME" && "${src}" == */dataframe_performance.cc ]]; then
+  if [[ "${ALLOW_NATIVE_FALLBACK}" == "true" && "${BENCHMARK_ID}" == "DATAFRAME" && "${src}" == */dataframe_performance.cc ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -699,7 +723,7 @@ for src in "${SOURCES[@]}"; do
       fi
     done
   fi
-  if [[ "${needs_native}" == "true" ]]; then
+  if [[ "${needs_native}" == "true" && "${ALLOW_NATIVE_FALLBACK}" == "true" ]]; then
     arch_dir="${OBJ_DIR}/${X86_ARCH}"
     ensure_dir_writable "${arch_dir}"
     obj="${arch_dir}/${stem}.o"
@@ -723,15 +747,6 @@ for src in "${SOURCES[@]}"; do
     die "Failed to generate CIR for ${src}"
   fi
   
-  # Check if we should use the direct CIR -> LLVM path (bypasses the crashing cir-to-mlir pass)
-  USE_DIRECT_PATH=false
-  if [[ "${PIPELINE_LLVM_LOWERING:-}" == "direct" || "${BENCHMARK_ID}" == "MCF" || "${BENCHMARK_ID}" == "LLAMACPP" || "${BENCHMARK_ID}" == "DATAFRAME" || "${BENCHMARK_ID}" == "MONETDB" || "${BENCHMARK_ID}" == "GAPBS" ]]; then
-    USE_DIRECT_PATH=true
-  fi
-  if [[ "${PIPELINE_LLVM_LOWERING:-}" == "cira" || "${PIPELINE_LLVM_LOWERING:-}" == "hetero" ]]; then
-    USE_DIRECT_PATH=false
-  fi
-
   if [[ "${USE_DIRECT_PATH}" == "false" ]]; then
     # Only run cir-to-mlir for heterogeneous path (non-direct benchmarks)
     echo "${CLANGIR_OPT_BIN}" -allow-unregistered-dialect -cir-mlir-scf-prepare -cir-to-mlir "${cir_path}" -o "${mlir_path}"
@@ -785,12 +800,18 @@ for src in "${SOURCES[@]}"; do
     rm -f "${llvm_path}.tmp1"
   else
     # Heterogeneous path via CIRA as before
+    # The input has already been lowered from CIR to core MLIR/LLVM.  Run the
+    # actual backward-slice region former directly; `cir-to-cira` only handles
+    # raw CIR and `rmem-search-remote` rewrites every SCF loop irrespective of
+    # remote memory, neither of which belongs in this path.
     "${CIRA_BIN}" -allow-unregistered-dialect "${mlir_path}" \
-      --cir-to-cira --rmem-search-remote -o "${cira_path}.unfixed"
+      --cira-region-formation="${CIRA_REGION_FORMATION_OPTIONS}" -o "${cira_path}.unfixed"
 
     # Fix scf.while blocks by adding missing scf.yield terminators
     python3 "${REPO_ROOT}/scripts/fix_scf_while_yields.py" "${cira_path}.unfixed" "${cira_path}"
     rm -f "${cira_path}.unfixed"
+    region_count="$(grep -c 'cira\.offload' "${cira_path}" || true)"
+    CIRA_REGION_COUNT=$((CIRA_REGION_COUNT + region_count))
 
     # Apply profile-guided offload pass if profile is available
     if [[ -n "${DISAGG_PROFILE_PATH:-}" && -f "${DISAGG_PROFILE_PATH}" ]]; then
@@ -841,6 +862,10 @@ for src in "${SOURCES[@]}"; do
   LL_FILES+=("${llvm_path}")
 done
 
+if [[ "${USE_DIRECT_PATH}" == "false" && "${CIRA_REGION_COUNT}" -eq 0 ]]; then
+  die "Full CIRA pipeline formed zero offload regions; refusing to emit a silently non-CIRA benchmark"
+fi
+
 info "Lowering Cira output to target objects"
 OPT_BIN="${REPO_ROOT}/../clangir/build/bin/opt"
 for arch in "${ARCHES[@]}"; do
@@ -854,7 +879,7 @@ for arch in "${ARCHES[@]}"; do
     ensure_dir_writable "$(dirname "${obj}")"
     # Run opt to apply LLVM optimizations including NRVO before LLC
     "${OPT_BIN}" -O2 -S "${ll}" -o "${ll_opt}" 2>/dev/null || cp "${ll}" "${ll_opt}"
-    if [[ "${BENCHMARK_ID}" == "GAPBS" ]]; then
+    if [[ "${BENCHMARK_ID}" == "GAPBS" && "${PIPELINE_GAPBS_LEGACY_HOOKS:-0}" == "1" ]]; then
       python3 "${REPO_ROOT}/scripts/inject_gapbs_runtime_hooks.py" "${ll_opt}"
     fi
     # Work around an LLVM CodeGenPrepare crash on some degenerate CFGs by

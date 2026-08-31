@@ -1339,8 +1339,7 @@ struct OffloadRegionOpLowering : public ConversionPattern {
 
                 // Get target function reference (if specified)
                 Value targetFuncPtr;
-                if (auto targetAttr = offloadOp.getTargetAttr()) {
-                    auto funcRef = FlatSymbolRefAttr::get(ctx, targetAttr.getRootReference());
+                if (offloadOp.getTargetAttr()) {
                     auto addrOfFunc = FlatSymbolRefAttr::get(ctx, "cira_get_device_func_addr");
                     targetFuncPtr = rewriter.create<LLVM::CallOp>(loc, ptrType, addrOfFunc, ValueRange{}).getResult();
                 } else {
@@ -1676,8 +1675,20 @@ struct ConvertCiraToLLVMHeteroPass : public PassWrapper<ConvertCiraToLLVMHeteroP
             // Create a new function for the device kernel (will be compiled
             // separately with the Vortex toolchain to produce .vxbin)
             OpBuilder moduleBuilder(module.getBody(), module.getBody()->end());
-            auto kernelFunc = moduleBuilder.create<func::FuncOp>(offloadOp.getLoc(), kernelName,
-                                                                 moduleBuilder.getFunctionType({}, {}));
+            Block &offloadBody = offloadOp.getBody().front();
+            SmallVector<Type> kernelArgTypes;
+            kernelArgTypes.reserve(offloadBody.getNumArguments());
+            for (BlockArgument arg : offloadBody.getArguments())
+                kernelArgTypes.push_back(arg.getType());
+
+            auto kernelFunc = moduleBuilder.create<func::FuncOp>(
+                offloadOp.getLoc(), kernelName,
+                moduleBuilder.getFunctionType(kernelArgTypes, {}));
+
+            // Keep the host submission and the extracted device function tied
+            // together. Region formation intentionally leaves target unset
+            // because the unique kernel name is assigned here.
+            offloadOp.setTargetAttr(SymbolRefAttr::get(ctx, kernelName));
 
             // Mark as Vortex kernel
             kernelFunc->setAttr("vortex.kernel", UnitAttr::get(ctx));
@@ -1695,8 +1706,10 @@ struct ConvertCiraToLLVMHeteroPass : public PassWrapper<ConvertCiraToLLVMHeteroP
             OpBuilder kernelBuilder(entryBlock, entryBlock->begin());
 
             // Clone operations from the offload body into the kernel
-            Block &offloadBody = offloadOp.getBody().front();
             IRMapping mapping;
+            for (auto [regionArg, kernelArg] :
+                 llvm::zip(offloadBody.getArguments(), entryBlock->getArguments()))
+                mapping.map(regionArg, kernelArg);
             for (auto &bodyOp : offloadBody.getOperations()) {
                 if (!isa<YieldOp>(&bodyOp)) {
                     kernelBuilder.clone(bodyOp, mapping);

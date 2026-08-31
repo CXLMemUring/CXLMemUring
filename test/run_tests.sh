@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CIRA_BIN="$ROOT_DIR/build/bin/cira"
-OUT_DIR="$ROOT_DIR/build/test_out"
+CIRA_BIN="${CIRA_BIN:-$ROOT_DIR/build/bin/cira}"
+OUT_DIR="${CIRA_TEST_OUT:-$ROOT_DIR/build/test_out}"
 mkdir -p "$OUT_DIR"
 
-CLANGIR=""
-if command -v clang >/dev/null 2>&1; then
+CLANGIR="${CLANGIR:-}"
+if [[ -z "$CLANGIR" ]] && command -v clang >/dev/null 2>&1; then
   CLANGIR=`which clang`
 fi
 
@@ -57,19 +57,9 @@ for mlir in \
   try_run "${bname}" run_chain "$mlir" "$bname"
 done
 
-echo "== Running negative test (expected fail) =="
-if "$CIRA_BIN" "$ROOT_DIR/test/mlir/negative_cast.mlir" --rmem-search-remote -o "$OUT_DIR/negative_remote.mlir" 2>"$OUT_DIR/negative.err"; then
-  echo "[XFAIL] negative_cast expected to fail but passed" >&2
-  xfail=$((xfail+1))
-else
-  if grep -q "arith.fptosi" "$OUT_DIR/negative.err"; then
-    echo "[ OK ] negative_cast failed as expected"
-    ok=$((ok+1))
-  else
-    echo "[FAIL] negative_cast failed but message mismatch" >&2
-    fail=$((fail+1))
-  fi
-fi
+echo "== Running cast regression test =="
+try_run "negative_cast" "$CIRA_BIN" "$ROOT_DIR/test/mlir/negative_cast.mlir" \
+  --rmem-search-remote -o "$OUT_DIR/negative_remote.mlir"
 
 echo "== FileCheck harness =="
 if [[ $have_filecheck -eq 1 ]]; then

@@ -25,6 +25,8 @@
 using namespace mlir;
 using namespace mlir::cira;
 
+#define DEBUG_TYPE "cira-provenance"
+
 //===----------------------------------------------------------------------===//
 // ClangIR (CIR) support
 //===----------------------------------------------------------------------===//
@@ -225,7 +227,11 @@ private:
         if (isCall(def))
             return def->hasAttr("cira.remote_result") ? RemoteProvenance::Remote : RemoteProvenance::Unknown;
 
-        if (isMemoryRead(def) || isMemoryEffectFree(def))
+        // CIR address operations are explicitly device-legal but do not all
+        // advertise MemoryEffectOpInterface. Propagate provenance through the
+        // same known-safe set instead of dropping a remote base at get_member
+        // or ptr_stride.
+        if (isMemoryRead(def) || isMemoryEffectFree(def) || isSupportedSliceOp(def))
             return joinPointerOperands(def);
         return RemoteProvenance::Unknown;
     }
@@ -253,9 +259,14 @@ bool mlir::cira::isRemoteMemoryAccess(Operation *op, bool allowLegacyHeapRemote)
         if (isRemoteHandleType(operand.getType()))
             return isMemoryRead(op) || !isMemoryEffectFree(op);
 
-    for (Value address : getAddressOperands(op))
-        if (isProvenanceCarrier(address.getType()) && getRemoteProvenance(address) == RemoteProvenance::Remote)
+    for (Value address : getAddressOperands(op)) {
+        RemoteProvenance provenance = getRemoteProvenance(address);
+        LLVM_DEBUG(llvm::dbgs() << "address " << address << " for " << op->getName()
+                                << " carrier=" << isProvenanceCarrier(address.getType())
+                                << " provenance=" << static_cast<unsigned>(provenance) << "\n");
+        if (isProvenanceCarrier(address.getType()) && provenance == RemoteProvenance::Remote)
             return true;
+    }
 
     if (allowLegacyHeapRemote) {
         if (auto load = dyn_cast<::cir::LoadOp>(op))
@@ -320,9 +331,11 @@ SmallVector<Value> mlir::cira::getAddressOperands(Operation *op) {
         return addresses;
     }
 
-    // Generic fallback: any pointer-like operand.
+    // Generic fallback: retain every pointer-like provenance carrier. A
+    // default-address-space CIR pointer may still be explicitly remote on an
+    // upstream cast, so filtering only by its type loses that annotation.
     for (Value operand : op->getOperands())
-        if (isRemoteHandleType(operand.getType()) || isRemoteAddressSpace(operand.getType()))
+        if (isProvenanceCarrier(operand.getType()))
             addresses.push_back(operand);
     return addresses;
 }
@@ -377,13 +390,17 @@ bool mlir::cira::isHostOnlyOp(Operation *op) {
 }
 
 bool mlir::cira::isDeviceLegalOp(Operation *op) {
-    if (!isSupportedSliceOp(op) || isHostOnlyOp(op))
+    if (!isSupportedSliceOp(op) || isHostOnlyOp(op)) {
+        LLVM_DEBUG(llvm::dbgs() << "device-illegal unsupported/host-only: " << *op << "\n");
         return false;
+    }
     // A supported load is still device-illegal when it dereferences host DRAM.
     // Keep that load on the host and capture its scalar result instead of
     // allowing the underlying host pointer to cross the device boundary.
-    if (isMemoryRead(op) && !isRemoteMemoryAccess(op))
+    if (isMemoryRead(op) && !isRemoteMemoryAccess(op)) {
+        LLVM_DEBUG(llvm::dbgs() << "device-illegal local/unknown load: " << *op << "\n");
         return false;
+    }
     return true;
 }
 

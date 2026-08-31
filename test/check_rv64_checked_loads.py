@@ -68,7 +68,7 @@ def main() -> int:
         checked = outlined_text.count("call @cira_device_checked_load")
 
         require(bodies, "no RV64 kernels were generated")
-        require(prepared == 7, f"expected 7 prepared roots, found {prepared}")
+        require(prepared == 8, f"expected 8 prepared roots, found {prepared}")
         require(installs == prepared, "prepared roots and cache-line installs differ")
         require(line_masks == installs, "each cache-line install must have one 64-byte alignment mask")
         require(checked > installs, "ordinary and prepared loads must both use the checked-load helper")

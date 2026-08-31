@@ -85,6 +85,19 @@ set_tests_properties(outline_rv64_reject_unresolved_call PROPERTIES
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/test_ctest_out)
 set(_CIRA ${CMAKE_BINARY_DIR}/bin/cira)
 set(_OUT ${CMAKE_BINARY_DIR}/test_ctest_out)
+if(CIRA_CLANGIR_BUILD_DIR)
+  set(_CLANGIR ${CIRA_CLANGIR_BUILD_DIR}/bin/clang)
+else()
+  set(_CLANGIR ${CMAKE_SOURCE_DIR}/../clangir/build/bin/clang)
+endif()
+
+# Keep the aggregate shell harness bound to this CMake build tree.  This
+# avoids silently testing a stale default build/ tool when a named build
+# directory is used.
+set_tests_properties(CXLMemUring_RunAll PROPERTIES
+  TIMEOUT 240
+  ENVIRONMENT "CIRA_BIN=${_CIRA};CIRA_TEST_OUT=${_OUT};CLANGIR=${_CLANGIR}"
+)
 
 add_executable(cira_runtime_llc_tile_mock runtime_llc_tile_mock.cpp)
 target_include_directories(cira_runtime_llc_tile_mock PRIVATE
@@ -147,9 +160,8 @@ add_mlir_pipeline_test(deep_nest            ${CMAKE_SOURCE_DIR}/test/mlir/deep_n
 add_mlir_pipeline_test(deep_nest_branch     ${CMAKE_SOURCE_DIR}/test/mlir/deep_nest_branch.mlir)
 add_mlir_pipeline_test(reduction            ${CMAKE_SOURCE_DIR}/test/mlir/reduction.mlir)
 
-# Negative test: expect verifier error on malformed cast
+# Regression test: this MLIR revision accepts float-to-index index_cast.
 add_test(
   NAME negative_cast
   COMMAND ${_CIRA} ${CMAKE_SOURCE_DIR}/test/mlir/negative_cast.mlir --rmem-search-remote -o ${_OUT}/negative_remote.mlir
 )
-set_tests_properties(negative_cast PROPERTIES WILL_FAIL TRUE PASS_REGULAR_EXPRESSION "")
