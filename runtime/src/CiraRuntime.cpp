@@ -579,11 +579,16 @@ private:
     size_t cache_line_size_ = 64;
     size_t prefetch_queue_depth_ = 4;
 
+    static size_t edgeStride(const RemoteMemRef *edge_ptr) {
+        return edge_ptr->metadata ? static_cast<size_t>(edge_ptr->metadata)
+                                  : sizeof(void *);
+    }
+
 public:
     void *loadEdge(RemoteMemRef *edge_ptr, size_t index, size_t prefetch_distance) override {
         // Calculate address
-        uintptr_t addr =
-            reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (index * sizeof(void *)); // Assuming edge size
+        const size_t stride = edgeStride(edge_ptr);
+        uintptr_t addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (index * stride);
 
         // Check cache
         auto it = edge_cache_.find(addr);
@@ -596,7 +601,7 @@ public:
             for (size_t i = 1; i <= prefetch_distance; i++) {
                 size_t prefetch_index = index + i * cache_line_size_;
                 uintptr_t prefetch_addr =
-                    reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (prefetch_index * sizeof(void *));
+                    reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (prefetch_index * stride);
                 __builtin_prefetch(reinterpret_cast<void *>(prefetch_addr), 0, 3);
             }
         }
@@ -611,7 +616,8 @@ public:
     }
 
     void evictEdge(RemoteMemRef *edge_ptr, size_t index) override {
-        uintptr_t addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) + (index * sizeof(void *));
+        uintptr_t addr = reinterpret_cast<uintptr_t>(edge_ptr->base_addr) +
+                         (index * edgeStride(edge_ptr));
 
         auto it = edge_cache_.find(addr);
         if (it != edge_cache_.end()) {
@@ -675,6 +681,7 @@ public:
         auto *ref = new RemoteMemRef();
         ref->size = size;
         ref->tier = tier;
+        ref->metadata = 0;
 
         // Allocate based on tier
         void *addr = nullptr;

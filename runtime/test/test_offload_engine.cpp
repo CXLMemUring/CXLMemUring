@@ -28,6 +28,7 @@ int main() {
     );
     assert(edge_ref != nullptr);
     assert(edge_ref->size == sizeof(TestEdge) * num_edges);
+    edge_ref->metadata = sizeof(TestEdge);
     std::cout << "  ✓ Allocated " << edge_ref->size << " bytes in CXL memory\n";
 
     // Initialize edge data

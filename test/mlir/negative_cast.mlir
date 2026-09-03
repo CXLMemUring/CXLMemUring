@@ -5,13 +5,12 @@ module {
     %c1 = arith.constant 1 : index
     scf.for %i = %c0 to %c10 step %c1 {
       %v = memref.load %A[%i] : memref<10xf32>
-      // Intentionally malformed: fptosi to index (should go via i32)
-      %bad = arith.fptosi %v : f32 to index
-      %idx = arith.index_cast %bad : index to index
+      // Regression input: this ClangIR/MLIR revision permits a float-to-index
+      // index_cast, so CIRA must preserve it rather than reject the module.
+      %idx = arith.index_cast %v : f32 to index
       %zero = arith.constant 0.0 : f32
       memref.store %zero, %A[%idx] : memref<10xf32>
     }
     return
   }
 }
-

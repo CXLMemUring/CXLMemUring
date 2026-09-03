@@ -51,6 +51,8 @@ struct RemoteMemRef {
     void* base_addr;
     size_t size;
     MemoryTier tier;
+    // Optional element stride in bytes for indexed OffloadEngine access.  A
+    // zero value preserves the legacy pointer-sized-element convention.
     uint64_t metadata;
 };
 
